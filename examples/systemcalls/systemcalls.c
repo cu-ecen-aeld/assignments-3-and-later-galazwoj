@@ -16,8 +16,12 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
-    return true;
+   int status = system(cmd);
+   if (status == -1)
+	return false;
+   if (WIFEXITED(status) && !WEXITSTATUS(status)) 
+       return true;
+   return false;
 }
 
 /**
@@ -40,15 +44,13 @@ bool do_exec(int count, ...)
     va_start(args, count);
     char * command[count+1];
     int i;
+
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
     }
+    va_end(args);
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
 /*
  * TODO:
  *   Execute a system command by calling fork, execv(),
@@ -58,10 +60,20 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
-
-    va_end(args);
-
-    return true;
+    int status;
+    pid_t pid;
+    fflush(stdout);
+    if ((pid = fork()) == -1)
+	return false;
+    if (pid == 0) {
+	execv ("/bin/sh", command);
+	return false;
+    }
+    if (waitpid (pid, &status, 0) == -1)
+  	return false;
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 127) //WSL, p. 160 
+	return true;
+    return  false;
 }
 
 /**
@@ -79,12 +91,8 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     {
         command[i] = va_arg(args, char *);
     }
+    va_end(args);
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
-
 /*
  * TODO
  *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
@@ -92,8 +100,26 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    int status;
+    pid_t pid;
 
-    va_end(args);
-
-    return true;
+    int fd = open(outputfile, O_RDWR|O_TRUNC|O_CREAT, 0644);
+    if (fd < 0)
+	return false;
+    fflush(stdout);
+    if ((pid = fork()) == -1)
+	return false;
+    if (pid == 0) {
+	if (dup2(fd, STDOUT_FILENO) < 0)
+	    return false;
+        close(fd);
+	execv (command[0], command);
+	return false;
+    }
+    close(fd);
+    if (waitpid (pid, &status, 0) == -1)
+  	return false;
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 127)
+        return true;
+    return false;
 }
