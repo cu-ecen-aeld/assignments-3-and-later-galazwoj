@@ -19,7 +19,7 @@ bool do_system(const char *cmd)
    int status = system(cmd);
    if (status == -1)
 	return false;
-   if (WIFEXITED(status) && !WEXITSTATUS(status)) 
+   if (WIFEXITED(status) && WEXITSTATUS(status) !=127) 
        return true;
    return false;
 }
@@ -66,12 +66,13 @@ bool do_exec(int count, ...)
     if ((pid = fork()) == -1)
 	return false;
     if (pid == 0) {
-	execv ("/bin/sh", command);
-	return false;
+	execv (command[0], command);
+	exit(EXIT_FAILURE);
     }
+
     if (waitpid (pid, &status, 0) == -1)
-  	return false;
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 127) //WSL, p. 160 
+	return false;
+    if (WIFEXITED(status) && !WEXITSTATUS(status))
 	return true;
     return  false;
 }
@@ -114,12 +115,13 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 	    return false;
         close(fd);
 	execv (command[0], command);
-	return false;
+	exit(EXIT_FAILURE);
     }
     close(fd);
+
     if (waitpid (pid, &status, 0) == -1)
   	return false;
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 127)
+    if (WIFEXITED(status) && !WEXITSTATUS(status))
         return true;
     return false;
 }
