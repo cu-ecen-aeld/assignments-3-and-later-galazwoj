@@ -13,15 +13,7 @@
 all: 	writer
 
 writer:	writer.c
-ifndef CROSS_COMPILE
-	gcc -o writer writer.c
-else
-ifeq ($(CROSS_COMPILE), aarch64-none-linux-gnu-)
-	aarch64-none-linux-gnu-gcc -o writer writer.c
-else
-	@echo "Unknown target set"
-endif
-endif
+	$(CROSS_COMPILE)gcc -o writer writer.c
 
 clean:
 	@-rm -f writer
