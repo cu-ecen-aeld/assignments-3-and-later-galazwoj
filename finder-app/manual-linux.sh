@@ -9,7 +9,7 @@ KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.gi
 KERNEL_VERSION=v5.1.10
 BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
-WRITER_DIR=${HOME}/github/assignment-1-galazwoj/finder-app
+echo $FINDER_APP_DIR
 export ARCH=arm64
 export CROSS_COMPILE=aarch64-none-linux-gnu-
 SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
@@ -285,9 +285,9 @@ if [ $? -ne 0 ]; then
 fi
 # TODO: Clean and build the writer utility  # TODO
 echo "[Info] copy writer utility" 
-cd ${WRITER_DIR}
+cd ${FINDER_APP_DIR}
 if [ $? -ne 0 ]; then
-    	echo "[Error] while cd ${WRITER_DIR}"
+    	echo "[Error] while cd ${FINDER_APP_DIR}"
     	exit 1
 fi
 echo "[Info] make clean writer utility" 
@@ -310,7 +310,7 @@ if [ $? -ne 0 ]; then
     	echo "[Error] while cd ${OUTDIR}/rootfs"
     	exit 1
 fi
-cp ${WRITER_DIR}/writer home
+cp ${FINDER_APP_DIR}/writer home
 if [ $? -ne 0 ]; then
     	echo "[Error] while cp writer to the /home directory"
     	exit 1
@@ -321,30 +321,25 @@ if [ $? -ne 0 ]; then
     	echo "[Error] while mkdir homne/conf"
     	exit 1
 fi
-cp ${WRITER_DIR}/finder.sh home
+cp ${FINDER_APP_DIR}/finder.sh home
 if [ $? -ne 0 ]; then
     	echo "[Error] while cp finder.sh to the /home directory"
     	exit 1
 fi
-cp ${WRITER_DIR}/conf/username.txt home/conf
+cp ${FINDER_APP_DIR}/conf/username.txt home/conf
 if [ $? -ne 0 ]; then
     	echo "[Error] while cp username.txt to the /home/conf directory"
     	exit 1
 fi
-cp ${WRITER_DIR}/conf/assignment.txt home/conf
+cp ${FINDER_APP_DIR}/conf/assignment.txt home/conf
 if [ $? -ne 0 ]; then
     	echo "[Error] while cp assignment.txt to the /home/conf directory"
     	exit 1
 fi
-#cp ${WRITER_DIR}/finder-test.sh home
-#if [ $? -ne 0 ]; then
-#    	echo "[Error] while cp finder-test.sh to the /home directory"
-#    	exit 1
-#fi
 
 # TODO: Modify the finder-test.sh script to reference conf/assignment.txt instead of ../conf/assignment.txt.
 echo "[Info] Modify the finder-test.sh"
-sed 's/\.\.\///' ${WRITER_DIR}/finder-test.sh > home/finder-test.sh
+sed 's/\.\.\///' ${FINDER_APP_DIR}/finder-test.sh > home/finder-test.sh
 if [ $? -ne 0 ]; then
     	echo "[Error] while sed finder-test.sh"
     	exit 1
@@ -357,7 +352,7 @@ chmod +x home/finder-test.sh
 #    	exit 1
 #fi
 # TODO: Copy the autorun-qemu.sh script into the outdir/rootfs/home directory
-cp ${WRITER_DIR}/autorun-qemu.sh home
+cp ${FINDER_APP_DIR}/autorun-qemu.sh home
 if [ $? -ne 0 ]; then
     	echo "[Error] while cp autorun-qemu.sh to the /home directory"
     	exit 1
