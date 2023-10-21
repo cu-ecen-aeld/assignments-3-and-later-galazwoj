@@ -4,8 +4,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
-//#define DEBUG 1
+#define DEBUG 1
 
 // Optional: use these functions to add debug or error prints to your application
 #ifdef DEBUG
@@ -22,6 +23,9 @@
 *	then holds for @param wait_to_release_ms milliseconds, 
 *	then releases.
 * 2. The thread started should return a pointer to the thread_data structure when it exits, which can be used to free memory as well as to check thread_complete_success for successful exit.	
+*
+*	nanosleep usage - https://stackoverflow.com/questions/1157209/is-there-an-alternative-sleep-function-in-c-to-milliseconds
+*
 */
 
 void* threadfunc(void* thread_param)
@@ -30,6 +34,7 @@ void* threadfunc(void* thread_param)
     // TODO: wait, obtain mutex, wait, release mutex as described by thread_data structure
     // hint: use a cast like the one below to obtain thread arguments from your parameter
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
+    struct timespec ts;
     int ret;
     bool locked = false;
 #ifdef DEBUG
@@ -37,7 +42,9 @@ void* threadfunc(void* thread_param)
 #endif
     DEBUG_LOG("thread '%d' started", tid);
 
-    sleep(thread_func_args->wait_to_obtain_ms/1000);
+    ts.tv_sec  =  thread_func_args->wait_to_obtain_ms / 1000;
+    ts.tv_nsec = (thread_func_args->wait_to_obtain_ms % 1000) * 1000000;
+    nanosleep(&ts, NULL);
     DEBUG_LOG("thread '%d' slept awaiting", tid);
 
     ret = pthread_mutex_lock(thread_func_args->mutex);
@@ -49,8 +56,10 @@ void* threadfunc(void* thread_param)
 	locked = true;
     	DEBUG_LOG("thread '%d' mutex acquired", tid);
     }
-	
-    sleep(thread_func_args->wait_to_release_ms/1000);
+
+    ts.tv_sec  =  thread_func_args->wait_to_release_ms / 1000;
+    ts.tv_nsec = (thread_func_args->wait_to_release_ms % 1000) * 1000000;
+    nanosleep(&ts, NULL);
     DEBUG_LOG("thread '%d' slept releasing", tid);
     
     if(locked) {
