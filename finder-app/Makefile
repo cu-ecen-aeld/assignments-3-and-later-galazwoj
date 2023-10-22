@@ -13,7 +13,7 @@
 all: 	writer
 
 writer:	writer.c
-	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(TARGET) $(LDFLAGS) writer.c
+	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o writer $(LDFLAGS) writer.c
 
 clean:
 	@-rm -f writer
