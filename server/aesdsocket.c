@@ -21,6 +21,8 @@ n     e. Receives data over the connection and appends to file /var/tmp/aesdsock
 *    	Logs message to the syslog “Caught signal, exiting” when SIGINT or SIGTERM is received.
 * Modify your program to support a -d argument which runs the aesdsocket application as a daemon. When in daemon mode the program should fork after ensuring it can bind to port 9000.
 *
+* MISSING FEATURE:
+*	A real program should check if it isn't already running when started, and refuse to continue if so (perhaps by checking if DATA_FILE is already present)
 **/
 
 #include <stdbool.h>
@@ -114,10 +116,14 @@ int daemonize() {
 		exit_on_error("Failed to fork: %s", strerror(errno));
 
 // Exit if parent 
-	if (pid > 0) 
+	if (pid > 0) {
+		syslog(LOG_INFO, "Parent exiting");
+		closelog();
 		exit(0);
+	}
 
 // Boring stuff before becoming a daemon
+	chdir("/");
 	setsid();
 	close(STDIN_FILENO);
 	close(STDOUT_FILENO);
@@ -154,7 +160,7 @@ int main(int argc, char *argv[])
 
 // Start syslog
 	openlog("aesdsocket", LOG_PID, LOG_USER);
-
+	syslog(LOG_INFO, "Starting");
 // Check if deamon flag specified
 	while ((opt = getopt(argc, argv, "d")) != -1) {
 		switch (opt) {
@@ -195,11 +201,14 @@ int main(int argc, char *argv[])
 		}
 
 // Work around ... already in use ... errors
-		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) 
+		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+			freeaddrinfo(servinfo); // all done with this structure
 			exit_on_error("setsockopt(SO_REUSEADDR) failed:", strerror(errno));
-		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int)) == -1) 
+		}
+		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int)) == -1) {
+			freeaddrinfo(servinfo); // all done with this structure
 			exit_on_error("setsockopt(SO_REUSEPORT) failed:", strerror(errno));
-
+		}
 // Bind 
 		if (bind(server_socket, p->ai_addr, p->ai_addrlen) == -1) {
 			close(server_socket);
@@ -240,8 +249,8 @@ int main(int argc, char *argv[])
 	printf("server: waiting for connections...\n");
 #endif
 	while(1) {  // main accept() loop
-#define MYBUF_SIZE (1024)
-		char recv_buf[MYBUF_SIZE];
+#define RECV_BUF_SIZE (1024)
+		char recv_buf[RECV_BUF_SIZE];
 		sin_size = sizeof their_addr;
 
 // Accept
@@ -291,9 +300,9 @@ int main(int argc, char *argv[])
 						packet_buf_used += n;			
 				 	} else {
 #ifdef DEBUG
-						puts("packet_buf really too small, gxiting");
+						puts("packet_buf really too small, exiting");
 #endif
-						exit_on_error("packet_buf really too small, gxiting", NULL);
+						exit_on_error("packet_buf really too small, exiting", NULL);
 					}
 				}
 #ifdef DEBUG
@@ -322,12 +331,13 @@ int main(int argc, char *argv[])
 					fflush(data_file);
 
 // Decrease memory usage
-					packet_buf_allocated = PACKET_BUF_SIZE;	
-					char *new_buffer = (char *)realloc(packet_buf, packet_buf_allocated);
-					if (new_buffer == NULL) 
-						exit_on_error("Failed to realloc dwon memory: ", strerror(errno));
-					packet_buf = new_buffer;
-
+					if (packet_buf_allocated > PACKET_BUF_SIZE) {					
+						packet_buf_allocated = PACKET_BUF_SIZE;	
+						char *new_buffer = (char *)realloc(packet_buf, packet_buf_allocated);
+						if (new_buffer == NULL) 
+							exit_on_error("Failed to shrink memory: ", strerror(errno));
+						packet_buf = new_buffer;
+					}
 					memset(packet_buf, 0, packet_buf_allocated);	
 					packet_buf_used = 0;
 					send_file();
