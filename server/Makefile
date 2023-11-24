@@ -1,9 +1,9 @@
 # Compiler and flags
-CC = $(CROSS_COMPILE)gcc
-FLAGS = -Wall -Werror
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -Wall -Werror
 
 .c.o:
-	$(CC) -c $(FLAGS) $^
+	$(CC) -c $(CFLAGS) $^
 # Source files
 SRCS = aesdsocket.c
 
@@ -17,7 +17,6 @@ TARGET = aesdsocket
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-#	$(CC) -o $@ $^
 	$(CC) -o $@ -pthread $^ -lrt
 
 .PHONY: all clean distclean
