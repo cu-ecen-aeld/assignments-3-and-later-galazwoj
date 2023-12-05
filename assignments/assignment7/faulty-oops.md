@@ -46,6 +46,7 @@ Code: d2800001 d2800000 d503233f d50323bf (b900003f)
 Details
 ```
 `# lsmod`
+```
 The output confirms `faulty` dfriver was indeed loaded
 ```
 Module                  Size  Used by    Tainted: G  
