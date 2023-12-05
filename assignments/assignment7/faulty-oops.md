@@ -99,7 +99,7 @@ According to [kernel documentation](https://www.kernel.org/doc/html/latest/admin
 Hardware name: linux,dummy-virt (DT)
 pstate: 80000005 (Nzcv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
 ```
-the function where the Oops happened is here
+The function where the Oops happened is here
 ```
 pc : faulty_write+0x14/0x20 [faulty]
 ```
