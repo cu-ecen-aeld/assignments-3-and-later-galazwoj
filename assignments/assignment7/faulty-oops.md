@@ -54,10 +54,11 @@ hello                  16384  0
 faulty                 16384  0 
 scull                  24576  0 
 ```
-This cvommand results in kernel panic
+This command results in kernel panic
 ```
 `# echo "hello_world" > /dev/faulty`
 ```
+The OOps message begins with
 ```
 Unable to handle kernel NULL pointer dereference at virtual address 0000000000000000
 ```
@@ -77,29 +78,28 @@ According to [this info](https://esr.arm64.dev/#0x96000045) this means
 * 32-bit instruction trapped
 * Abort caused by writing to memory
 * Translation fault, level 1.
-More details are [here](https://github.com/google/aarch64-esr-decoder)
+* More details are [here](https://github.com/google/aarch64-esr-decoder)
 ```
 user pgtable: 4k pages, 39-bit VAs, pgdp=00000000424ed000
 [0000000000000000] pgd=0000000000000000, p4d=0000000000000000, pud=0000000000000000
 ```
-This informs which page table was affected, it's NULL page
+This informs which page table was affected, it's the NULL page, actually
 ```
 Internal error: Oops: 96000045 [#1] SMP
 ```
-[#1] means number of thimes Oops occured
+[#1] means number of times Oops occured
 ```
 Modules linked in: hello(O) faulty(O) scull(O)
 CPU: 0 PID: 159 Comm: sh Tainted: G           O      5.15.18 #1
 ```
-The kernel is tainted because	
-G	proprietary module was loaded
-O	externally-built ("out-of-tree") module was loaded
-according to [kernel documentation](https://www.kernel.org/doc/html/latest/admin-guide/tainted-kernels.html)
+According to [kernel documentation](https://www.kernel.org/doc/html/latest/admin-guide/tainted-kernels.html) the kernel is tainted because	
+* G	a proprietary module was loaded
+* O	an externally-built ("out-of-tree") module was loaded
 ```
 Hardware name: linux,dummy-virt (DT)
 pstate: 80000005 (Nzcv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
 ```
-the function where the Oops happened
+the function where the Oops happened is here
 ```
 pc : faulty_write+0x14/0x20 [faulty]
 ```
@@ -107,7 +107,7 @@ Return from the call goes there
 ```
 lr : vfs_write+0xa8/0x2b0
 ```
-Register dump (not really useful in this case because by now it is obvious the problem was cvaused by a write to 0 page)
+Register dump (not really useful in this case because by now it is obvious the problem was caused by a write to 0 page)
 ```
 sp : ffffffc008d23d80
 x29: ffffffc008d23d80 x28: ffffff80024fb300 x27: 0000000000000000
@@ -134,15 +134,14 @@ Call trace:
  el0t_64_sync_handler+0xe8/0xf0
  el0t_64_sync+0x1a0/0x1a4
 ```
-The bug is in the function faulty_write, module faulty
-The function was invoked by ksys_write, wgich in turn was called by write syscall, and so on ...
-Thebug in the function faulty_write happens at location 0x14, theunction itself is 0x20 bytes long. This information makes iot easy to find the place of the bug.
+* The bug is in the function faulty_write, module faulty. The function was invoked by ksys_write, wgich in turn was called by write syscall, and so on ...
+* The bug in the function faulty_write happens at location 0x14, theunction itself is 0x20 bytes long. This information makes iot easy to find the place of the bug.
 ```
 ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
 		loff_t *pos)
 {
 	/* make a simple fault by dereferencing a NULL pointer */
-	*(int *)0 = 0;   // FIXME
+	*(int *)0 = 0;   // PLACE OF THE BUG
 	return 0;
 }
 ```
@@ -151,5 +150,5 @@ A hex-dump of the section of machine code that was being run at the time the Oop
 Code: d2800001 d2800000 d503233f d50323bf (b900003f) 
 ---[ end trace 243f05b8c04c717b ]---
 ```
-Analysis made based on [this info](https://www.opensourceforu.com/2011/01/understanding-a-kernel-oops/)
+Analysis was made based on [this info](https://www.opensourceforu.com/2011/01/understanding-a-kernel-oops/)
 
