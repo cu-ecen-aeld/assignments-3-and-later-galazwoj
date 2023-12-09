@@ -17,12 +17,12 @@
 *	b. Use appropriate locking to ensure the timestamp is written atomically with respect to socket data
 *	 Hint: 
 *		Think where should the timer be initialized. Should it be initialized in parent or child?
-	* 3. Use the updated sockettest.sh script (in the assignment-autotest/test/assignment6 subdirectory) . You can run this manually outside the `./full-test.sh` script by:
-	*	a. Starting your aesdsocket application
-	*	b. Executing the sockettest.sh script from the assignment-autotest subdirectory.
-	*	c. Stopping your aesdsocket application.
+* 3. Use the updated sockettest.sh script (in the assignment-autotest/test/assignment6 subdirectory) . You can run this manually outside the `./full-test.sh` script by:
+*	a. Starting your aesdsocket application
+*	b. Executing the sockettest.sh script from the assignment-autotest subdirectory.
+*	c. Stopping your aesdsocket application.
 * 4. The `./full-test.sh` script in your aesd-assignments repository should now complete successfully.
-	* 5. Tag the assignment with “assignment-<assignment number>-complete” once the final commit is pushed onto your repository. The instructions to add a tag can be found here
+* 5. Tag the assignment with “assignment-<assignment number>-complete” once the final commit is pushed onto your repository. The instructions to add a tag can be found here
 * 
 * Validation:
 * 1. The automated test environment should pass when running against your assignment implementation.
@@ -52,8 +52,13 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 *	(although thread creation is somewhat fast, it still has some overhead and issues a bunch of syscalls), 
 *	I am not sure if the number of configured signals it still yields better performance.
 *
+* 5. Modify your socket server application developed in assignments 5 and 6 to support and use a build switch USE_AESD_CHAR_DEVICE, set to 1 by default, which:
+*        a. Redirects reads and writes to /dev/aesdchar instead of /var/tmp/aesdsocketdata
+*        b. Removes timestamp printing.
+*        c. Ensure you do not remove the  /dev/aesdchar endpoint after exiting the aesdsocket application.
+*
 ***/
-#define _GNU_SOURCE		//for gettid()
+#define _GNU_SOURCE		
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -75,19 +80,26 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 #include <pthread.h>
 #include <sys/queue.h>
 
-//#define DEBUG 
-//#define DEBUG_PACKET 
+#define DEBUG 
+#define DEBUG_PACKET 
+#define USE_AESD_CHAR_DEVICE 1
 
 #define PORT "9000"  // the port users will be connecting to
 #define BACKLOG 10   // how many pending connections queue will hold
+#ifdef  USE_AESD_CHAR_DEVICE
+#define DATA_FILE "/dev/aesdchar"
+#else
 #define DATA_PATH "/var/tmp"
 #define DATA_FILE "/var/tmp/aesdsocketdata"
+#endif
 #define SOCKET_ERROR (-1)
 
 int server_socket = -1;  // listen on server_socket
 
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
+#ifndef  USE_AESD_CHAR_DEVICE
 timer_t timer_id;			                      	// timer id
+#endif
 
 struct thread_params {
 	int client_socket;			// new connection on client_socket
@@ -115,8 +127,10 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 	exit_in_progress = true;
 	bool data_file_opened = true;	// assimg DATA_FILE open
 
+#ifndef  USE_AESD_CHAR_DEVICE
 // Delete timer 
 	timer_delete(timer_id);
+#endif
 
 // Join all threads to finish
 	struct thread_entry *curr;
@@ -161,9 +175,10 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 // Just in case
 	pthread_mutex_unlock(&file_mutex);
 
+#ifndef  USE_AESD_CHAR_DEVICE
 // Delete the file
 	remove(DATA_FILE);
-
+#endif
 // Close syslog
 	closelog();
 
@@ -220,6 +235,7 @@ void setup_signal_handlers() {
 	sigaction(SIGTERM, &sa, NULL);
 }
 
+#ifndef  USE_AESD_CHAR_DEVICE
 // Write timestamp to a file
 void timer_thread(union sigval arg) {
 	char msg[100];
@@ -227,11 +243,9 @@ void timer_thread(union sigval arg) {
 	struct tm *local_time;
 
         FILE* file = (FILE *)arg.sival_ptr;
-	if (!file) {
-//		exit_on_error(" no open file in timer thread:", strerror(errno));
-		syslog(LOG_INFO, "no open file in timer thread 1: %s", strerror(errno));
-		return;
-	}
+	if (!file) 
+		exit_on_error(" no open file in timer thread:", strerror(errno));
+
 	current_time = time(NULL);
 	if ((local_time = localtime(&current_time)) == NULL) 
 		exit_on_error("localtime in timer thread:", strerror(errno));
@@ -241,14 +255,12 @@ void timer_thread(union sigval arg) {
 
 	pthread_mutex_lock(&file_mutex);
 	if (!file) 
-//		exit_on_error(" no open file in timer thread:", strerror(errno));
-		syslog(LOG_INFO, "no open file in timer thread 2: %s", strerror(errno));
+		exit_on_error(" no open file in timer thread:", strerror(errno));
 	else
 		fputs(msg, file);
 
 	if (!file) 
-//		exit_on_error(" no open file in timer thread:", strerror(errno));
-		syslog(LOG_INFO, "no open file in timer thread 3: %s", strerror(errno));
+		exit_on_error(" no open file in timer thread:", strerror(errno));
 	else
 	        fflush(file);
 	pthread_mutex_unlock(&file_mutex);
@@ -277,6 +289,7 @@ void create_timer(unsigned n, FILE *file)
 	if(timer_settime(timer_id, 0, &ts, 0) == -1) 
 		exit_on_error("Set timer", NULL);
 }
+#endif
 
 // Create server socket, terminate if failed
 void create_server_socket() {
@@ -328,9 +341,18 @@ void create_server_socket() {
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa) {
 	if (sa->sa_family == AF_INET) 
-	    return &(((struct sockaddr_in*)sa)->sin_addr);
+		return &(((struct sockaddr_in*)sa)->sin_addr);
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
+
+#ifdef  USE_AESD_CHAR_DEVICE
+int is_char_device(const char *path)
+{
+    struct stat path_stat;
+    stat(path, &path_stat);
+    return S_ISCHR(path_stat.st_mode);
+}
+#endif
 
 void *connection_thread(void *args);
 
@@ -355,13 +377,20 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-// Check presence of /vat/tmp and creates it if not exists
+#ifdef  USE_AESD_CHAR_DEVICE
+// Check presence of /dev/aesdchar and abort if not exists
+	if(!is_char_device(DATA_FILE)) {
+		fprintf(stderr, DATA_FILE " does not exist, exiting\n");
+		exit_on_error(DATA_FILE " does not exist, exiting", NULL);
+	}
+#else
+// Check presence of /vat/tmp and create it if not exists
     	if (mkdir(DATA_PATH, 0777) && errno != EEXIST)
 		exit_on_error("Cannot create /var/tmp path", strerror(errno));
 
 // Delete stale data file
 	remove(DATA_FILE);
-
+#endif
 // Set up signal handlers
 	setup_signal_handlers();
 
@@ -378,13 +407,15 @@ int main(int argc, char *argv[]) {
 
 // Open file for writing
 	FILE *data_file = fopen(DATA_FILE, "w+");
-	if (data_file == NULL) 
+	if (data_file == NULL) {
 		exit_on_error("Failed to open data file: ", strerror(errno));
+	}
 
 // Create timer thread
+#ifndef  USE_AESD_CHAR_DEVICE
 #define TIMER_PERIOD 10 
 	create_timer(TIMER_PERIOD, data_file);
-
+#endif
 #ifdef DEBUG
 	printf("server: waiting for connections...\n");
 #endif
@@ -460,31 +491,22 @@ void send_file(int client_socket, FILE * data_file) {
 	bool no_more_data = false;
 	size_t total_bytes_read = 0;
 	size_t total_bytes_sent = 0;
-	int cur_pos;
-
 	pthread_mutex_lock(&file_mutex);
 
+#ifndef  USE_AESD_CHAR_DEVICE
 // Save file pos ptr
-	if (!data_file) {
-#ifdef DEBUG
-		syslog(LOG_INFO, "no open file in send file 1: %s", strerror(errno));
-#endif
+	if (!data_file) 
 		exit_on_error(" no open file in send file 1:", strerror(errno));
-	}
 
-	cur_pos = ftell(data_file);
+	int cur_pos = ftell(data_file);
 	fseek(data_file, 0, SEEK_SET);
-
+#endif
 	memset(send_buf, 0, sizeof(send_buf));
 	while(1) {
 
 // read from file
-		if (!data_file) {
-#ifdef DEBUG
-			syslog(LOG_INFO, "no open file in send file 2: %s", strerror(errno));
-#endif
+		if (!data_file) 
 			exit_on_error(" no open file in send file 2:", strerror(errno));
-		}
 
 		size_t bytes_read = fread(send_buf, 1, sizeof(send_buf), data_file);
 		if (bytes_read < sizeof(send_buf)) {
@@ -521,14 +543,13 @@ void send_file(int client_socket, FILE * data_file) {
 	printf("total bytes read '%ld' total bytes sent '%ld'\n", total_bytes_read, total_bytes_sent);
 #endif
 
+#ifndef  USE_AESD_CHAR_DEVICE
 // Restore file pos ptr	
-	if (!data_file) {
-#ifdef DEBUG
-		syslog(LOG_INFO, "no open file in send file 3: %s", strerror(errno));
-#endif
+	if (!data_file) 
 		exit_on_error(" no open file in send file 3:", strerror(errno));
-	}
+
 	fseek(data_file, cur_pos, SEEK_SET);
+#endif
 	pthread_mutex_unlock(&file_mutex);
 }
 
@@ -615,12 +636,8 @@ void *connection_thread(void *args) {
 //	 Write packet to file
 				pthread_mutex_lock(&file_mutex);
 
-				if (!data_file) {
-#ifdef DEBUG
-					syslog(LOG_INFO, "no open file in connection thread: %s", strerror(errno));
-#endif
+				if (!data_file) 
 					exit_on_error(" no open file in connection thread:", strerror(errno));
-				}
 
 				size_t written_to_file = fwrite(packet_buf, 1, line_length, data_file);
 				fflush(data_file);
@@ -669,4 +686,3 @@ void *connection_thread(void *args) {
 	params->finished = true;
 	return params;
 }
-
