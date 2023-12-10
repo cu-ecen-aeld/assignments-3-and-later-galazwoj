@@ -57,6 +57,12 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 *        b. Removes timestamp printing.
 *        c. Ensure you do not remove the  /dev/aesdchar endpoint after exiting the aesdsocket application.
 *
+*	[X] added USE_AESD_CHAR_DEVICE logic added
+*	[X] some debug stuff removed
+*	[X] USE_BUFFERED_IO logic, ie unbuffered i/o added
+*	[ ] file open/close per thread
+*	[ ] cleanup() logic changed
+* 
 ***/
 #define _GNU_SOURCE		
 #include <stdbool.h>
@@ -84,9 +90,11 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 #define DEBUG_PACKET 
 #define USE_AESD_CHAR_DEVICE 1
 
+//#define USE_BUFFERED_IO 1
+
 #define PORT "9000"  // the port users will be connecting to
 #define BACKLOG 10   // how many pending connections queue will hold
-#ifdef  USE_AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
 #define DATA_FILE "/dev/aesdchar"
 #else
 #define DATA_PATH "/var/tmp"
@@ -97,14 +105,18 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 int server_socket = -1;  // listen on server_socket
 
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 timer_t timer_id;			                      	// timer id
 #endif
 
 struct thread_params {
 	int client_socket;			// new connection on client_socket
 	char client_address[INET6_ADDRSTRLEN];	// client IP address
+#ifdef USE_BUFFERED_IO
 	FILE *data_file;			// data file
+#else
+	int data_file;				// data file
+#endif
 	bool finished;             		// is thread finished
 };
 
@@ -122,12 +134,19 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 	static bool exit_in_progress = false;
 	if (exit_in_progress) {
 		syslog(LOG_ERR, "already in  cleanup, ignoring ...");
+		if (msg) {
+			if (s)
+				syslog(LOG_ERR, "%s %s", msg, s);
+			else
+				syslog(LOG_ERR, "%s", msg);
+//			syslog(LOG_INFO, "... exiting");
+		} 
 		return;
 	}
 	exit_in_progress = true;
 	bool data_file_opened = true;	// assimg DATA_FILE open
 
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 // Delete timer 
 	timer_delete(timer_id);
 #endif
@@ -142,7 +161,11 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 
 // Close data file. This funny code is because there is purposedly no globsal variable pointing to data_file
 			if (data_file_opened && curr->params->data_file) {
+#ifdef USE_BUFFERED_IO
 				fclose(curr->params->data_file);
+#else
+				close(curr->params->data_file);
+#endif
 				data_file_opened = false;
 			}
 // packet buffer is closed by the thread itself so no check is made to free it here
@@ -170,12 +193,13 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 			syslog(LOG_ERR, "%s %s", msg, s);
 		else
 			syslog(LOG_ERR, "%s", msg);
-	}
+		syslog(LOG_INFO, "... exiting");
+	} 
 
 // Just in case
 	pthread_mutex_unlock(&file_mutex);
 
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 // Delete the file
 	remove(DATA_FILE);
 #endif
@@ -235,16 +259,24 @@ void setup_signal_handlers() {
 	sigaction(SIGTERM, &sa, NULL);
 }
 
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 // Write timestamp to a file
 void timer_thread(union sigval arg) {
 	char msg[100];
 	time_t current_time;
 	struct tm *local_time;
 
+#ifdef USE_BUFFERED_IO
         FILE* file = (FILE *)arg.sival_ptr;
+#else
+       	int *p = (int *)arg.sival_ptr;
+	int file = *p;
+#ifdef DEBUG
+	printf("file %d\n", file);
+#endif
+#endif
 	if (!file) 
-		exit_on_error(" no open file in timer thread:", strerror(errno));
+		exit_on_error("No open file in timer thread, handle:", NULL);
 
 	current_time = time(NULL);
 	if ((local_time = localtime(&current_time)) == NULL) 
@@ -254,27 +286,33 @@ void timer_thread(union sigval arg) {
 		exit_on_error("strftime in timer thread:", strerror(errno));
 
 	pthread_mutex_lock(&file_mutex);
-	if (!file) 
-		exit_on_error(" no open file in timer thread:", strerror(errno));
-	else
-		fputs(msg, file);
-
-	if (!file) 
-		exit_on_error(" no open file in timer thread:", strerror(errno));
-	else
-	        fflush(file);
+#ifdef USE_BUFFERED_IO
+	fputs(msg, file);
+	fflush(file);
+#else
+	write(file, msg, strlen(msg)); 
+#endif
 	pthread_mutex_unlock(&file_mutex);
 }
 
 // Create timer that executes every n seconds
 // based on LSP p 392-3
+#ifdef USE_BUFFERED_IO
 void create_timer(unsigned n, FILE *file)
+#else
+void create_timer(unsigned n, int *file)
+#endif
 {
 	struct itimerspec ts;
 	struct sigevent se;
 
 	se.sigev_notify = SIGEV_THREAD;
 	se.sigev_value.sival_ptr = file; 
+#ifdef DEBUG
+#ifndef USE_BUFFERED_IO
+	printf("data file create_timer: %d\n", *file);
+#endif
+#endif
 	se.sigev_notify_function = timer_thread;
 	se.sigev_notify_attributes = NULL;
 
@@ -345,7 +383,7 @@ void *get_in_addr(struct sockaddr *sa) {
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-#ifdef  USE_AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
 int is_char_device(const char *path)
 {
     struct stat path_stat;
@@ -377,7 +415,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-#ifdef  USE_AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
 // Check presence of /dev/aesdchar and abort if not exists
 	if(!is_char_device(DATA_FILE)) {
 		fprintf(stderr, DATA_FILE " does not exist, exiting\n");
@@ -406,15 +444,29 @@ int main(int argc, char *argv[]) {
 		exit_on_error("Failed to listen:", strerror(errno));
 
 // Open file for writing
+#ifdef USE_BUFFERED_IO
 	FILE *data_file = fopen(DATA_FILE, "w+");
-	if (data_file == NULL) {
+#else
+#ifdef USE_AESD_CHAR_DEVICE
+	int data_file = open(DATA_FILE, O_RDWR);
+#else
+	int data_file = open(DATA_FILE, O_CREAT|O_RDWR|O_TRUNC, S_IRUSR|S_IWUSR);
+#endif
+#ifdef DEBUG
+	printf("data file: %d\n", data_file);
+#endif
+#endif
+	if (!data_file) 
 		exit_on_error("Failed to open data file: ", strerror(errno));
-	}
 
 // Create timer thread
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 #define TIMER_PERIOD 10 
+#ifdef USE_BUFFERED_IO
 	create_timer(TIMER_PERIOD, data_file);
+#else
+	create_timer(TIMER_PERIOD, &data_file);
+#endif
 #endif
 #ifdef DEBUG
 	printf("server: waiting for connections...\n");
@@ -431,6 +483,8 @@ int main(int argc, char *argv[]) {
 
 // Fill in thread params
 		struct thread_params *params = malloc(sizeof(struct thread_params));
+		if (!params)
+			exit_on_error("thread_params malloc", strerror(errno));
 		params->client_socket = client_socket;
 
 // Get IP address of the client
@@ -440,10 +494,13 @@ int main(int argc, char *argv[]) {
 		params->data_file = data_file;
 		params->finished = false;
 
+		struct thread_entry *new_thread = malloc(sizeof(struct thread_entry));
+		if (!new_thread)
+			exit_on_error("thread_entry malloc", strerror(errno));
+
 		if (pthread_create(&thread_id, NULL, connection_thread, params) < 0) 
 			exit_on_error("pthread_create", strerror(errno));
 
-		struct thread_entry *new_thread = malloc(sizeof(struct thread_entry));
 		new_thread->thread = thread_id;
 		new_thread->joined = false;
 		new_thread->params = params;
@@ -485,45 +542,83 @@ size_t send_all(int s, char *buf, size_t len, int flag) {
 } 
 
 // Send entire file contents 
-void send_file(int client_socket, FILE * data_file) {
+#ifdef USE_BUFFERED_IO
+size_t send_file(int client_socket, FILE * data_file) {
+#else
+size_t send_file(int client_socket, int data_file) {
+#endif
+
 #define SEND_BUF_SIZE 1024
 	char send_buf[SEND_BUF_SIZE];
 	bool no_more_data = false;
 	size_t total_bytes_read = 0;
 	size_t total_bytes_sent = 0;
+	bool error = false;
+	if (client_socket == -1) {
+		syslog(LOG_ERR, "No client socket in send file");
+		error = true;
+		goto error_bad_parameters;
+	}
+
+	if (!data_file) {
+		syslog(LOG_ERR,"No open file in send file");
+		error = true;
+		goto error_bad_parameters;
+	} 
 	pthread_mutex_lock(&file_mutex);
 
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 // Save file pos ptr
-	if (!data_file) 
-		exit_on_error(" no open file in send file 1:", strerror(errno));
-
+#ifdef USE_BUFFERED_IO
 	int cur_pos = ftell(data_file);
 	fseek(data_file, 0, SEEK_SET);
+#else
+	int cur_pos = lseek(data_file, 0, SEEK_CUR);
+	lseek(data_file, 0, SEEK_SET);
+#endif
 #endif
 	memset(send_buf, 0, sizeof(send_buf));
 	while(1) {
 
 // read from file
-		if (!data_file) 
-			exit_on_error(" no open file in send file 2:", strerror(errno));
-
+#ifdef USE_BUFFERED_IO
 		size_t bytes_read = fread(send_buf, 1, sizeof(send_buf), data_file);
+#else
+		size_t bytes_read = read(data_file, send_buf, sizeof(send_buf));
+#endif
 		if (bytes_read < sizeof(send_buf)) {
-      			if (ferror(data_file))    
-            			exit_on_error("Failed to read data: ", strerror(errno));
+#ifdef USE_BUFFERED_IO
+      			if (ferror(data_file)) {   
+            			syslog(LOG_ERR, "Failed to read data: %s", strerror(errno));
+				error = true;
+				break;
+			} 
 			else
 				if (feof(data_file))   
 					no_more_data = true;
+#else
+			if (bytes_read == -1) {
+            			syslog(LOG_ERR, "Failed to read data: %s", strerror(errno));
+				error = true;
+				break;
+			} 
+			else
+				no_more_data = true;
+#endif
 		}
+
 		if (bytes_read == 0)
 			break;
 		total_bytes_read += bytes_read;
 
 // Send 
 		size_t bytes_sent = send_all(client_socket, send_buf, bytes_read, 0);
-                if (bytes_sent == -1) 
-            		exit_on_error("Failed to send data: ", strerror(errno));
+                if (bytes_sent == -1) {
+            		syslog(LOG_ERR, "Failed to send data: %s", strerror(errno));
+			error = true;
+			break;
+		} 
+
 #ifdef DEBUG_PACKET
 		printf("bytes read '%ld' bytes sent '%ld'\n", bytes_read, bytes_sent);
 		printf("send_buf = '%s'\n", (bytes_read < 128) ? send_buf : "not printing");
@@ -534,6 +629,7 @@ void send_file(int client_socket, FILE * data_file) {
 #ifdef DEBUG
             		puts("Need to fix the send routine");
 #endif
+			error = true;
 			break;
 		}
 		if (no_more_data)
@@ -543,36 +639,63 @@ void send_file(int client_socket, FILE * data_file) {
 	printf("total bytes read '%ld' total bytes sent '%ld'\n", total_bytes_read, total_bytes_sent);
 #endif
 
-#ifndef  USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 // Restore file pos ptr	
-	if (!data_file) 
-		exit_on_error(" no open file in send file 3:", strerror(errno));
-
+#ifdef USE_BUFFERED_IO
 	fseek(data_file, cur_pos, SEEK_SET);
+#else
+	lseek(data_file, cur_pos, SEEK_SET);
+#endif
+
 #endif
 	pthread_mutex_unlock(&file_mutex);
+error_bad_parameters:
+	return (error) ? -1 : total_bytes_sent;
 }
 
 // Recv / send thread loop
 void *connection_thread(void *args) {
+	bool error = false;
 	struct thread_params *params = (struct thread_params*)args;
+	pid_t tid  = gettid();
+	if (!params) {
+		syslog(LOG_ERR,"Null parameters in connection thread %d", tid);
+		error = true;
+		goto error_null_params;
+	}
+	int client_socket = params->client_socket;
+	if (client_socket == -1) {
+		syslog(LOG_ERR, "No client socket in connection thread %d", tid);
+		error = true;
+		goto error_bad_socket;
+	}
 // Print IP addrerss
 #ifdef DEBUG
-	pid_t tid  = gettid();
-	printf("server: got connection from %s. thread %d\n", params->client_address, tid);
+	printf("server: got connection from %s, thread %d\n", params->client_address, tid);
 #endif
-	syslog(LOG_INFO, "Accepted connection from %s", params->client_address);
+	syslog(LOG_INFO, "Accepted connection from %s, thread %d", params->client_address, tid);
 
-	int    client_socket = params->client_socket;
+#ifdef USE_BUFFERED_IO
 	FILE  *data_file     = params->data_file;
+#else
+	int data_file  	     = params->data_file;
+#endif
+	if (!data_file) {
+		syslog(LOG_ERR,"No open file in connection thread");
+		error = true;
+		goto error_bad_file;
+	} 
 
 // Allocate packet buffer if empty 
 #define PACKET_BUF_SIZE    (1024+10)
 #define PACKET_BUF_EXPAND  (1024)
 	char  *packet_buf;
 	size_t packet_buf_allocated = PACKET_BUF_SIZE;	
-	if (!(packet_buf = malloc(packet_buf_allocated)))
-		exit_on_error("Failed to malloc memory:", strerror(errno));
+	if (!(packet_buf = malloc(packet_buf_allocated))) {
+		syslog(LOG_ERR, "Failed to malloc memory: %s", strerror(errno));
+		error = true;
+		goto error_packet_malloc;
+	} 
 
 	size_t  packet_buf_used = 0;
 	memset(packet_buf, 0, packet_buf_allocated);
@@ -586,9 +709,12 @@ void *connection_thread(void *args) {
 // read packet
 		memset(recv_buf, 0, sizeof(recv_buf));	
 		int n = recv(client_socket, recv_buf, sizeof(recv_buf), 0);
-		if (n == -1) 
-			exit_on_error("Failed to recv data:", strerror(errno));
-
+		if (n == -1) {
+			syslog(LOG_ERR,"Failed to recv data: %s", strerror(errno));
+			error = true;
+			goto error_packet_recv;
+		}	
+		      	
 		if (n == 0) 
 			break;
 
@@ -601,8 +727,11 @@ void *connection_thread(void *args) {
 #endif
 				packet_buf_allocated += PACKET_BUF_EXPAND;
 				char *new_buffer = (char *)realloc(packet_buf, packet_buf_allocated);
-				if (new_buffer == NULL) 
-					exit_on_error("Failed to realloc memory:", strerror(errno));
+				if (new_buffer == NULL) {
+					syslog(LOG_ERR, "Failed to realloc memory: %s", strerror(errno));
+					error = true;
+					goto error_packet_realloc;
+				}	
 				packet_buf = new_buffer;
 			}
 
@@ -611,7 +740,9 @@ void *connection_thread(void *args) {
 #ifdef DEBUG
 				puts("packet_buf really too small, exiting");
 #endif
-				exit_on_error("packet_buf really too small, exiting", NULL);
+				syslog(LOG_ERR, "Packet_buf really too small, exiting");
+				error = true;
+				goto error_packet_too_small;
 			}
 
 // Copy data to packet buffer
@@ -633,32 +764,47 @@ void *connection_thread(void *args) {
 #ifdef DEBUG_PACKET
 				printf("line length: '%ld'\n", line_length);
 #endif
-//	 Write packet to file
+// Write packet to file
 				pthread_mutex_lock(&file_mutex);
 
-				if (!data_file) 
-					exit_on_error(" no open file in connection thread:", strerror(errno));
-
+#ifdef USE_BUFFERED_IO
 				size_t written_to_file = fwrite(packet_buf, 1, line_length, data_file);
 				fflush(data_file);
+#else
+				size_t written_to_file = write(data_file, packet_buf, line_length);
+#endif
+
 				pthread_mutex_unlock(&file_mutex);
 #ifdef DEBUG_PACKET
 				printf("written_to_file = '%ld' '%ld'\n", written_to_file, line_length);
 #endif
-				if (written_to_file < line_length && ferror(data_file)) 
-	            			exit_on_error("Failed to write data: ", strerror(errno));
+#ifdef USE_BUFFERED_IO
+				if (written_to_file < line_length && ferror(data_file)) {
+#else
+				if (written_to_file == -1) {
+#endif
+	            			syslog(LOG_ERR, "Failed to write data: %s", strerror(errno));
+					error = true;
+					goto error_file_write;
+				}
 
 // Decrease memory usage
 				if (packet_buf_allocated > PACKET_BUF_SIZE) {
 					packet_buf_allocated = PACKET_BUF_SIZE;	
 					char *new_buffer = (char *)realloc(packet_buf, packet_buf_allocated);
-					if (new_buffer == NULL) 
-						exit_on_error("Failed to shrink memory: ", strerror(errno));
+					if (new_buffer == NULL) {
+						syslog(LOG_ERR, "Failed to shrink memory: %s", strerror(errno));
+						error = true;
+						goto error_packet_shrink;
+					}
 					packet_buf = new_buffer;
 				}
 				memset(packet_buf, 0, packet_buf_allocated);
 				packet_buf_used = 0;
-				send_file(client_socket, data_file);
+				if (send_file(client_socket, data_file) == -1) {
+					error = true;
+					goto error_packet_send;
+				}
 #ifdef DEBUG_PACKET
 			} else {
 				puts("no newline found");
@@ -667,20 +813,34 @@ void *connection_thread(void *args) {
 		}
 	}
 
+error_packet_send:
+error_packet_shrink:
+error_file_write:
+error_packet_too_small:
+error_packet_realloc:
+error_packet_recv:
+// Free packet bnuffer
+	free(packet_buf);
+
+error_packet_malloc:
+error_bad_file:
 // Close socket
 	shutdown(client_socket, SHUT_RDWR);
 	close(client_socket);
 	params->client_socket = -1;
 
-// Free packet bnuffer
-	free(packet_buf);
-
 // Print IP address
 #ifdef DEBUG
 	printf("Closed connection from %s. thread %d\n", params->client_address, tid);
 #endif
-	syslog(LOG_INFO, "Closed connection from %s", params->client_address);
+	syslog(LOG_INFO, "Closed connection from %s, thread %d", params->client_address, tid);
 	memset(params->client_address, 0, sizeof(params->client_address));
+
+error_bad_socket:
+error_null_params:
+	if (error)
+		cleanup(NULL, NULL, SOCKET_ERROR);
+		/* not reached */		
 
 // Mark thread comp;eted
 	params->finished = true;
