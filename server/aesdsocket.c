@@ -26,10 +26,10 @@
 *	[X] #define debug helpers
 *	[X] remove timer
 *	[X] file open/close per thread
-*	[ ] cleanup() logic changed
-*
+*	[X] cleanup() logic changed
+* 
 ***/
-#define _GNU_SOURCE
+#define _GNU_SOURCE		
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -56,7 +56,7 @@
 
 //#define USE_AESD_CHAR_DEVICE 1
 //#define USE_FILE_MUTEX
-#define USE_BUFFERED_IO 1
+//#define USE_BUFFERED_IO 1
 
 #ifndef USE_AESD_CHAR_DEVICE 
 #define USE_FILE_MUTEX
@@ -84,8 +84,9 @@
 #endif
 #define SOCKET_ERROR (-1)
 
-int server_socket = -1;  // listen on server_socket
-
+int server_socket = -1; 					// listen on server_socket
+volatile int running = false;					// thread loop running ?
+							
 #ifdef USE_FILE_MUTEX
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
 #endif
@@ -105,83 +106,19 @@ struct thread_entry {
 
 SLIST_HEAD(thread_list, thread_entry) threads;	// thread pool
 
-// cleanup
-void cleanup(const char *msg, const char *s, int exitcode) {
-	static bool exit_in_progress = false;
-	if (exit_in_progress) {
-		syslog(LOG_ERR, "already in  cleanup, ignoring ...");
-		if (msg) {
-			if (s)
-				syslog(LOG_ERR, "%s %s", msg, s);
-			else
-				syslog(LOG_ERR, "%s", msg);
-//			syslog(LOG_INFO, "... exiting");
-		} 
-		return;
-	}
-	exit_in_progress = true;
-
-// Join all threads to finish
-	struct thread_entry *curr;
-	SLIST_FOREACH(curr, &threads, entries) {
-		if (!curr->joined) {
-			if (pthread_join(curr->thread, NULL) < 0) 
-				syslog(LOG_ERR, "pthread_join failed, ignoring ...");
-			curr->joined = true;
-			free(curr->params);
-		}
-	}
-
-// Remover elements from list
-	while (!SLIST_EMPTY(&threads)) {
-		curr = SLIST_FIRST(&threads);
-		SLIST_REMOVE_HEAD(&threads, entries);
-		free(curr);
-	}
-
-// Close server soocket
-	if (server_socket != -1) {
-		shutdown(server_socket, SHUT_RDWR);
-		close(server_socket);
-	}
-
-// WWrite to syslog
-	if (msg) {
-		if (s)
-			syslog(LOG_ERR, "%s %s", msg, s);
-		else
-			syslog(LOG_ERR, "%s", msg);
-		syslog(LOG_INFO, "... exiting");
-	} 
-
-#ifndef USE_AESD_CHAR_DEVICE
-// Delete the file
-	remove(DATA_FILE);
-#endif
-// Close syslog
-	closelog();
-
-// Exit with exit code
-	exit(exitcode);
-}
-
-// Error handling
-void exit_on_error(const char *msg, const char *s) {
-	cleanup(msg, s, SOCKET_ERROR);
-}
-
 // Signal handler
 void handle_signal(int signal) {
 	syslog(LOG_INFO, "Caught signal, exiting");
-	cleanup(NULL, NULL, 0);
+	running = false;
 }
 
 // Turns into a daemon process
 int daemonize() {
 	pid_t pid = fork();
-	if (pid < 0) 
-		exit_on_error("Failed to fork:", strerror(errno));
-
+	if (pid < 0) {
+		syslog(LOG_ERR, "Failed to fork: %s", strerror(errno));
+		return -1;
+	}
 // Exit if parent 
 	if (pid > 0) {
 		syslog(LOG_INFO, "Parent exiting");
@@ -215,7 +152,7 @@ void setup_signal_handlers() {
 }
 
 // Create server socket, terminate if failed
-void create_server_socket() {
+int create_server_socket() {
 	struct addrinfo hints, *servinfo, *p;
 	int rv;
 	int yes=1;
@@ -226,9 +163,10 @@ void create_server_socket() {
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE; // use my IP
 
-	if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) 
-		exit_on_error("getaddrinfo: ", gai_strerror(rv));
-
+	if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) { 
+		syslog(LOG_ERR, "getaddrinfo: %s", gai_strerror(rv));
+		return -1;
+	}
 // loop through all the results and bind to the first we can
 	for(p = servinfo; p != NULL; p = p->ai_next) {
 		if ((server_socket = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
@@ -239,11 +177,13 @@ void create_server_socket() {
 // Work around ... already in use ... errors
 		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
 			freeaddrinfo(servinfo); // all done with this structure
-			exit_on_error("setsockopt(SO_REUSEADDR) failed:", strerror(errno));
+			syslog(LOG_ERR, "setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+			return -1;
 		}
 		if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int)) == -1) {
 			freeaddrinfo(servinfo); // all done with this structure
-			exit_on_error("setsockopt(SO_REUSEPORT) failed:", strerror(errno));
+			syslog(LOG_ERR, "setsockopt(SO_REUSEPORT) failed: %s", strerror(errno));
+			return -1;
 		}
 // Bind 
 		if (bind(server_socket, p->ai_addr, p->ai_addrlen) == -1) {
@@ -251,14 +191,16 @@ void create_server_socket() {
 			syslog(LOG_ERR, "Failed to bind socket: %s", strerror(errno));
 			continue;
 		}
-
-		break;
+		break; 
 	}
 
 // Exit if no address bound
 	freeaddrinfo(servinfo); // all done with this structure
-	if (p == NULL)  
-		exit_on_error("server: failed to bind", NULL);
+	if (!p) {
+		syslog(LOG_ERR, "server: failed to bind");
+		return -1;
+	}
+	return 0;
 }
 
 // get sockaddr, IPv4 or IPv6:
@@ -271,9 +213,9 @@ void *get_in_addr(struct sockaddr *sa) {
 #ifdef USE_AESD_CHAR_DEVICE
 int is_char_device(const char *path)
 {
-    struct stat path_stat;
-    stat(path, &path_stat);
-    return S_ISCHR(path_stat.st_mode);
+    	struct stat path_stat;
+    	stat(path, &path_stat);
+    	return S_ISCHR(path_stat.st_mode);
 }
 #endif
 
@@ -282,6 +224,7 @@ void *connection_thread(void *args);
 int main(int argc, char *argv[]) {
 	int opt;
 	bool daemonize_flag = false;
+	bool error = true;
 
 // Start syslog
 	openlog("aesdsocket", LOG_PID, LOG_USER);
@@ -296,7 +239,8 @@ int main(int argc, char *argv[]) {
 			break;
 		default:
 			fprintf(stderr, "Usage: %s [-d]\n", argv[0]);
-			exit_on_error("Invalid parameter supplied", NULL);
+			syslog(LOG_INFO,"Invalid parameter supplied");
+			goto error_invalid_parameter;
 		}
 	}
 
@@ -304,12 +248,15 @@ int main(int argc, char *argv[]) {
 // Check presence of /dev/aesdchar and abort if not exists
 	if(!is_char_device(DATA_FILE)) {
 		fprintf(stderr, DATA_FILE " does not exist, exiting\n");
-		exit_on_error(DATA_FILE " does not exist, exiting", NULL);
+		syslog(LOG_ERR, DATA_FILE " does not exist, exiting" );
+		goto error_path_not_found;
 	}
 #else
 // Check presence of /vat/tmp and create it if not exists
-    	if (mkdir(DATA_PATH, 0777) && errno != EEXIST)
-		exit_on_error("Cannot create /var/tmp path", strerror(errno));
+    	if (mkdir(DATA_PATH, 0777) && errno != EEXIST) {
+		syslog(LOG_ERR, "Cannot create /var/tmp path %s", strerror(errno));
+		goto error_path_not_found;
+	}
 
 // Delete stale data file
 	remove(DATA_FILE);
@@ -318,31 +265,42 @@ int main(int argc, char *argv[]) {
 	setup_signal_handlers();
 
 // Crrate server socket and fork
-	create_server_socket();
+	if (create_server_socket() == -1) {
+		goto error_socket;
+	}
 
 // Become a daemon if selected
-	if (daemonize_flag && daemonize() == -1) 
-		exit_on_error("Failed to daemonize", NULL);
+	if (daemonize_flag && daemonize() == -1) {
+		syslog(LOG_ERR, "Failed to daemonize");
+		goto error_cannot_fork;
+	}
 
 // Listen to the socket
-	if (listen(server_socket, BACKLOG) == -1) 
-		exit_on_error("Failed to listen:", strerror(errno));
+	if (listen(server_socket, BACKLOG) == -1) {
+		syslog(LOG_ERR, "Failed to listen: %s", strerror(errno));
+		goto error_cannot_listen;
+	}
 
 	PDEBUG("server: waiting for connections...\n");
-	while(1) {  // main accept() loop
+	running = true;
+	while(running) {  // main accept() loop
 		struct sockaddr_storage their_addr; // connector's address information
 		socklen_t sin_size = sizeof their_addr;
 		pthread_t thread_id;
 		struct thread_entry *curr;
 // Accept
 		int client_socket = accept(server_socket, (struct sockaddr *)&their_addr, &sin_size);
-		if (client_socket == -1) 
-			exit_on_error("Failed to accept connection:", strerror(errno));
+		if (client_socket == -1) {
+			syslog(LOG_ERR, "Failed to accept connection: %s", strerror(errno));
+			goto error_cannot_accept;
+		}
 
 // Fill in thread params
 		struct thread_params *params = malloc(sizeof(struct thread_params));
-		if (!params)
-			exit_on_error("thread_params malloc", strerror(errno));
+		if (!params) {
+			syslog(LOG_ERR, "thread_params malloc %s", strerror(errno));
+			goto error_malloc_thread_params;
+		}
 		params->client_socket = client_socket;
 
 // Get IP address of the client
@@ -350,11 +308,15 @@ int main(int argc, char *argv[]) {
 		params->finished = false;
 
 		struct thread_entry *new_thread = malloc(sizeof(struct thread_entry));
-		if (!new_thread)
-			exit_on_error("thread_entry malloc", strerror(errno));
-
-		if (pthread_create(&thread_id, NULL, connection_thread, params) < 0) 
-			exit_on_error("pthread_create", strerror(errno));
+		if (!new_thread) {
+			syslog(LOG_ERR, "thread_entry malloc %s", strerror(errno));
+			free(params);
+			goto error_malloc_thread_entry;
+		}
+		if (pthread_create(&thread_id, NULL, connection_thread, params) < 0) {
+			syslog(LOG_ERR, "pthread_create %s", strerror(errno));
+			goto error_pthread_create;
+		}
 
 		new_thread->thread = thread_id;
 		new_thread->joined = false;
@@ -370,9 +332,52 @@ int main(int argc, char *argv[]) {
 				free(curr->params);
 			}
 		}
+	} /* while() */
+	error = false;
+
+error_pthread_create:
+error_malloc_thread_entry:
+error_malloc_thread_params:
+
+#ifndef USE_AESD_CHAR_DEVICE
+// Delete the file
+	remove(DATA_FILE);
+#endif
+
+// Join all threads to finish
+	struct thread_entry *curr;
+	SLIST_FOREACH(curr, &threads, entries) {
+		if (!curr->joined) {
+			if (pthread_join(curr->thread, NULL) < 0) 
+				syslog(LOG_ERR, "pthread_join failed, ignoring ...");
+			curr->joined = true;
+			free(curr->params);
+		}
 	}
-	/* notreached*/
-	return 0;
+
+// Remover elements from list
+	while (!SLIST_EMPTY(&threads)) {
+		curr = SLIST_FIRST(&threads);
+		SLIST_REMOVE_HEAD(&threads, entries);
+		free(curr);
+	}
+
+error_cannot_accept:
+error_cannot_listen:
+error_cannot_fork:
+// Close server soocket
+	if (server_socket != -1) {
+		shutdown(server_socket, SHUT_RDWR);
+		close(server_socket);
+	}
+error_socket:
+error_path_not_found:
+error_invalid_parameter:
+// Close syslog
+	closelog();
+	
+// Exit with exit code
+	exit(error ? SOCKET_ERROR : 0);
 }
 
 // Send single packet
@@ -699,10 +704,10 @@ error_bad_file:
 error_bad_socket:
 error_null_params:
 	if (error)
-		cleanup(NULL, NULL, SOCKET_ERROR);
-		/* not reached */		
+		running = false;
 
 // Mark thread comp;eted
 	params->finished = true;
 	return params;
 }
+
