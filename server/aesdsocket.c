@@ -10,48 +10,10 @@
 *	c. Your program should continue to gracefully exit when SIGTERM/SIGINT is received, after requesting an exit from each thread and waiting for threads to complete execution.
 *	d. Use the singly linked list APIs discussed in the video (or your own implementation if you prefer) to manage threads.
 *		i. Use pthread_join() to join completed threads, do not use detached threads for this assignment.
-* 2. Modify your aesdsocket source code repository to:
-*	a. Append a timestamp in the form “timestamp:time” where time is specified by the RFC 2822 compliant strftime format*, followed by newline.  
-*		This string should be appended to the /var/tmp/aesdsocketdata file every 10 seconds, where the string includes the year, month, day, hour 
-*		(in 24 hour format) minute and second representing the system wall clock time.
-*	b. Use appropriate locking to ensure the timestamp is written atomically with respect to socket data
-*	 Hint: 
-*		Think where should the timer be initialized. Should it be initialized in parent or child?
-* 3. Use the updated sockettest.sh script (in the assignment-autotest/test/assignment6 subdirectory) . You can run this manually outside the `./full-test.sh` script by:
-*	a. Starting your aesdsocket application
-*	b. Executing the sockettest.sh script from the assignment-autotest subdirectory.
-*	c. Stopping your aesdsocket application.
-* 4. The `./full-test.sh` script in your aesd-assignments repository should now complete successfully.
-* 5. Tag the assignment with “assignment-<assignment number>-complete” once the final commit is pushed onto your repository. The instructions to add a tag can be found here
 * 
 * Validation:
 * 1. The automated test environment should pass when running against your assignment implementation.
 * 2. You should not have any memory leaks or errors identified when running valgrind.
-*	a. You may see one possibly lost message which looks like this, which it’s OK to ignore:
-* 
-*		272 bytes in 1 blocks are possibly lost in loss record 1 of 2
-*		==6362==    at 0x4C33B25: calloc (in /usr/lib/valgrind/vgpreload_memcheck-amd64-linux.so)
-*		==6362==    by 0x4013646: allocate_dtv (dl-tls.c:286)
-*		==6362==    by 0x4013646: _dl_allocate_tls (dl-tls.c:530)
-n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
-*		==6362==    by 0x504E227: pthread_create@@GLIBC_2.2.5 (pthread_create.c:644)
-*		==6362==    by 0x4E4351A: __start_helper_thread (timer_routines.c:176)
-*		==6362==    by 0x5055906: __pthread_once_slow (pthread_once.c:116)
-*		==6362==    by 0x4E423BA: timer_create@@GLIBC_2.3.3 (timer_create.c:101)
-*		==6362==    by 0x10A157: init_timer_sec (aesdsocket.c:222)
-*		==6362==    by 0x10995B: main (aesdsocket.c:88)
-* 
-* https://sourceware.org/bugzilla/show_bug.cgi?id=29705
-* Bug 29705 - libc timer_create with option SIGEV_THREAD system call having memory leaks after timer_delete system call 
-* Adhemerval Zanella 2022-10-20 16:45:37 UTC
-*	This is by design, Linux timer_crate/SIGEV_THREAD creates a helper detached thread on the first usage that acts as an activator for the callbacks.  
-*	The timer_delete removes the timer from the internal list, the background thread is kept so a next timer_create do not need to recreate it.
-*
-*	This is done as an optimization: it trades some contention on accessing the internal list (so the helper thread can find and execute the timer callback) 
-*	with the need to create/destroy a thread for each timer invocation.  I expect that for a limited number of timers it should be way faster 
-*	(although thread creation is somewhat fast, it still has some overhead and issues a bunch of syscalls), 
-*	I am not sure if the number of configured signals it still yields better performance.
-*
 * 5. Modify your socket server application developed in assignments 5 and 6 to support and use a build switch USE_AESD_CHAR_DEVICE, set to 1 by default, which:
 *        a. Redirects reads and writes to /dev/aesdchar instead of /var/tmp/aesdsocketdata
 *        b. Removes timestamp printing.
@@ -63,11 +25,11 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 *	[X] USE_FILE_MUTEX logic
 *	[X] #define debug helpers
 *	[X] remove timer
-*	[ ] file open/close per thread
+*	[X] file open/close per thread
 *	[ ] cleanup() logic changed
-* 
+*
 ***/
-#define _GNU_SOURCE		
+#define _GNU_SOURCE
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -91,9 +53,10 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 
 #define AESD_DEBUG 
 #define AESD_DEBUG_PACKET 
+
 //#define USE_AESD_CHAR_DEVICE 1
 //#define USE_FILE_MUTEX
-//#define USE_BUFFERED_IO 1
+#define USE_BUFFERED_IO 1
 
 #ifndef USE_AESD_CHAR_DEVICE 
 #define USE_FILE_MUTEX
@@ -130,11 +93,6 @@ pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
 struct thread_params {
 	int client_socket;			// new connection on client_socket
 	char client_address[INET6_ADDRSTRLEN];	// client IP address
-#ifdef USE_BUFFERED_IO
-	FILE *data_file;			// data file
-#else
-	int data_file;				// data file
-#endif
 	bool finished;             		// is thread finished
 };
 
@@ -162,7 +120,6 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 		return;
 	}
 	exit_in_progress = true;
-	bool data_file_opened = true;	// assimg DATA_FILE open
 
 // Join all threads to finish
 	struct thread_entry *curr;
@@ -171,18 +128,6 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 			if (pthread_join(curr->thread, NULL) < 0) 
 				syslog(LOG_ERR, "pthread_join failed, ignoring ...");
 			curr->joined = true;
-
-// Close data file. This funny code is because there is purposedly no globsal variable pointing to data_file
-			if (data_file_opened && curr->params->data_file) {
-#ifdef USE_BUFFERED_IO
-				fclose(curr->params->data_file);
-#else
-				close(curr->params->data_file);
-#endif
-				data_file_opened = false;
-			}
-// packet buffer is closed by the thread itself so no check is made to free it here
-// client_socket is closed by the thread itself so no check is made to close it here
 			free(curr->params);
 		}
 	}
@@ -208,11 +153,6 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 			syslog(LOG_ERR, "%s", msg);
 		syslog(LOG_INFO, "... exiting");
 	} 
-
-#ifdef USE_FILE_MUTEX
-// Just in case
-	pthread_mutex_unlock(&file_mutex);
-#endif
 
 #ifndef USE_AESD_CHAR_DEVICE
 // Delete the file
@@ -388,20 +328,6 @@ int main(int argc, char *argv[]) {
 	if (listen(server_socket, BACKLOG) == -1) 
 		exit_on_error("Failed to listen:", strerror(errno));
 
-// Open file for writing
-#ifdef USE_BUFFERED_IO
-	FILE *data_file = fopen(DATA_FILE, "w+");
-#else
-#ifdef USE_AESD_CHAR_DEVICE
-	int data_file = open(DATA_FILE, O_RDWR);
-#else
-	int data_file = open(DATA_FILE, O_CREAT|O_RDWR|O_TRUNC, S_IRUSR|S_IWUSR);
-#endif
-	PDEBUG("data file: %d\n", data_file);
-#endif
-	if (!data_file) 
-		exit_on_error("Failed to open data file: ", strerror(errno));
-
 	PDEBUG("server: waiting for connections...\n");
 	while(1) {  // main accept() loop
 		struct sockaddr_storage their_addr; // connector's address information
@@ -421,9 +347,6 @@ int main(int argc, char *argv[]) {
 
 // Get IP address of the client
 		inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), params->client_address, sizeof(params->client_address));
-
-// Set data file handle
-		params->data_file = data_file;
 		params->finished = false;
 
 		struct thread_entry *new_thread = malloc(sizeof(struct thread_entry));
@@ -491,12 +414,6 @@ size_t send_file(int client_socket, int data_file) {
 		error = true;
 		goto error_bad_parameters;
 	}
-
-	if (!data_file) {
-		syslog(LOG_ERR,"No open file in send file");
-		error = true;
-		goto error_bad_parameters;
-	} 
 
 #ifdef USE_FILE_MUTEX
 	pthread_mutex_lock(&file_mutex);
@@ -603,16 +520,39 @@ void *connection_thread(void *args) {
 	PDEBUG("server: got connection from %s, thread %d\n", params->client_address, tid);
 	syslog(LOG_INFO, "Accepted connection from %s, thread %d", params->client_address, tid);
 
+// Open file for writing
+#ifdef USE_AESD_CHAR_DEVICE
 #ifdef USE_BUFFERED_IO
-	FILE  *data_file     = params->data_file;
+	FILE *data_file = fopen(DATA_FILE, "w+");
 #else
-	int data_file  	     = params->data_file;
+	int data_file = open(DATA_FILE, O_RDWR);
 #endif
-	if (!data_file) {
+#else
+#ifdef USE_BUFFERED_IO
+	FILE *data_file = fopen(DATA_FILE, "a+");
+#else
+	int data_file = open(DATA_FILE, O_CREAT|O_RDWR|O_APPEND, S_IRUSR|S_IWUSR);  
+#endif
+#endif
+
+#ifdef USE_BUFFERED_IO
+	if (!data_file) { 
+#else
+	if (data_file == -1) { 
+#endif
 		syslog(LOG_ERR,"No open file in connection thread");
 		error = true;
 		goto error_bad_file;
 	} 
+
+#ifndef USE_AESD_CHAR_DEVICE
+// Set file pos at the end (by default it is set at the beginning)
+#ifdef USE_BUFFERED_IO
+	fseek(data_file, 0, SEEK_END);
+#else
+	lseek(data_file, 0, SEEK_END);
+#endif
+#endif
 
 // Allocate packet buffer if empty 
 #define PACKET_BUF_SIZE    (1024+10)
@@ -739,6 +679,12 @@ error_packet_recv:
 	free(packet_buf);
 
 error_packet_malloc:
+#ifdef USE_BUFFERED_IO
+	fclose(data_file);
+#else
+	close(data_file);
+#endif
+
 error_bad_file:
 // Close socket
 	shutdown(client_socket, SHUT_RDWR);
