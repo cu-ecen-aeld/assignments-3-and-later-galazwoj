@@ -60,6 +60,8 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 *	[X] added USE_AESD_CHAR_DEVICE logic added
 *	[X] some debug stuff removed
 *	[X] USE_BUFFERED_IO logic, ie unbuffered i/o added
+*	[X] USE_FILE_MUTEX logic
+*	[X] #define debug helpers
 *	[ ] file open/close per thread
 *	[ ] cleanup() logic changed
 * 
@@ -86,11 +88,27 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 #include <pthread.h>
 #include <sys/queue.h>
 
-#define DEBUG 
-#define DEBUG_PACKET 
-#define USE_AESD_CHAR_DEVICE 1
-
+#define AESD_DEBUG 
+#define AESD_DEBUG_PACKET 
+//#define USE_AESD_CHAR_DEVICE 1
+#define USE_FILE_MUTEX
 //#define USE_BUFFERED_IO 1
+
+#ifndef USE_AESD_CHAR_DEVICE 
+#define USE_FILE_MUTEX
+#endif
+
+#ifdef AESD_DEBUG
+#define PDEBUG(fmt, args...) fprintf(stderr, fmt, ## args)
+#else
+#define PDEBUG(fmt, args...) /* not debugging: nothing */
+#endif
+
+#ifdef AESD_DEBUG_PACKET 
+#define PPDEBUG(fmt, args...) fprintf(stderr, fmt, ## args)
+#else
+#define PPDEBUG(fmt, args...) /* not debugging: nothing */
+#endif
 
 #define PORT "9000"  // the port users will be connecting to
 #define BACKLOG 10   // how many pending connections queue will hold
@@ -104,7 +122,9 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 
 int server_socket = -1;  // listen on server_socket
 
+#ifdef USE_FILE_MUTEX
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
+#endif
 #ifndef USE_AESD_CHAR_DEVICE
 timer_t timer_id;			                      	// timer id
 #endif
@@ -196,8 +216,10 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 		syslog(LOG_INFO, "... exiting");
 	} 
 
+#ifdef USE_FILE_MUTEX
 // Just in case
 	pthread_mutex_unlock(&file_mutex);
+#endif
 
 #ifndef USE_AESD_CHAR_DEVICE
 // Delete the file
@@ -271,9 +293,7 @@ void timer_thread(union sigval arg) {
 #else
        	int *p = (int *)arg.sival_ptr;
 	int file = *p;
-#ifdef DEBUG
-	printf("file %d\n", file);
-#endif
+	PDEBUG("file %d\n", file);
 #endif
 	if (!file) 
 		exit_on_error("No open file in timer thread, handle:", NULL);
@@ -285,14 +305,18 @@ void timer_thread(union sigval arg) {
 	if (strftime(msg, sizeof(msg), "timestamp: %F %T\n", local_time) == 0) 
 		exit_on_error("strftime in timer thread:", strerror(errno));
 
+#ifdef USE_FILE_MUTEX
 	pthread_mutex_lock(&file_mutex);
+#endif
 #ifdef USE_BUFFERED_IO
 	fputs(msg, file);
 	fflush(file);
 #else
 	write(file, msg, strlen(msg)); 
 #endif
+#ifdef USE_FILE_MUTEX
 	pthread_mutex_unlock(&file_mutex);
+#endif
 }
 
 // Create timer that executes every n seconds
@@ -308,10 +332,8 @@ void create_timer(unsigned n, int *file)
 
 	se.sigev_notify = SIGEV_THREAD;
 	se.sigev_value.sival_ptr = file; 
-#ifdef DEBUG
 #ifndef USE_BUFFERED_IO
-	printf("data file create_timer: %d\n", *file);
-#endif
+	PDEBUG("data file create_timer: %d\n", *file);
 #endif
 	se.sigev_notify_function = timer_thread;
 	se.sigev_notify_attributes = NULL;
@@ -452,9 +474,7 @@ int main(int argc, char *argv[]) {
 #else
 	int data_file = open(DATA_FILE, O_CREAT|O_RDWR|O_TRUNC, S_IRUSR|S_IWUSR);
 #endif
-#ifdef DEBUG
-	printf("data file: %d\n", data_file);
-#endif
+	PDEBUG("data file: %d\n", data_file);
 #endif
 	if (!data_file) 
 		exit_on_error("Failed to open data file: ", strerror(errno));
@@ -468,9 +488,7 @@ int main(int argc, char *argv[]) {
 	create_timer(TIMER_PERIOD, &data_file);
 #endif
 #endif
-#ifdef DEBUG
-	printf("server: waiting for connections...\n");
-#endif
+	PDEBUG("server: waiting for connections...\n");
 	while(1) {  // main accept() loop
 		struct sockaddr_storage their_addr; // connector's address information
 		socklen_t sin_size = sizeof their_addr;
@@ -565,8 +583,10 @@ size_t send_file(int client_socket, int data_file) {
 		error = true;
 		goto error_bad_parameters;
 	} 
-	pthread_mutex_lock(&file_mutex);
 
+#ifdef USE_FILE_MUTEX
+	pthread_mutex_lock(&file_mutex);
+#endif
 #ifndef USE_AESD_CHAR_DEVICE
 // Save file pos ptr
 #ifdef USE_BUFFERED_IO
@@ -619,25 +639,19 @@ size_t send_file(int client_socket, int data_file) {
 			break;
 		} 
 
-#ifdef DEBUG_PACKET
-		printf("bytes read '%ld' bytes sent '%ld'\n", bytes_read, bytes_sent);
-		printf("send_buf = '%s'\n", (bytes_read < 128) ? send_buf : "not printing");
-#endif
+		PPDEBUG("bytes read '%ld' bytes sent '%ld'\n", bytes_read, bytes_sent);
+		PPDEBUG("send_buf = '%s'\n", (bytes_read < 128) ? send_buf : "not printing");
 		total_bytes_sent += bytes_sent;	
                 if (bytes_sent < bytes_read) {
             		syslog(LOG_ERR, "Need to fix the send routine");
-#ifdef DEBUG
-            		puts("Need to fix the send routine");
-#endif
+            		PDEBUG("Need to fix the send routine\n");
 			error = true;
 			break;
 		}
 		if (no_more_data)
 			break;
 	}
-#ifdef DEBUG_PACKET
-	printf("total bytes read '%ld' total bytes sent '%ld'\n", total_bytes_read, total_bytes_sent);
-#endif
+	PPDEBUG("total bytes read '%ld' total bytes sent '%ld'\n", total_bytes_read, total_bytes_sent);
 
 #ifndef USE_AESD_CHAR_DEVICE
 // Restore file pos ptr	
@@ -648,7 +662,9 @@ size_t send_file(int client_socket, int data_file) {
 #endif
 
 #endif
+#ifdef USE_FILE_MUTEX
 	pthread_mutex_unlock(&file_mutex);
+#endif
 error_bad_parameters:
 	return (error) ? -1 : total_bytes_sent;
 }
@@ -670,9 +686,7 @@ void *connection_thread(void *args) {
 		goto error_bad_socket;
 	}
 // Print IP addrerss
-#ifdef DEBUG
-	printf("server: got connection from %s, thread %d\n", params->client_address, tid);
-#endif
+	PDEBUG("server: got connection from %s, thread %d\n", params->client_address, tid);
 	syslog(LOG_INFO, "Accepted connection from %s, thread %d", params->client_address, tid);
 
 #ifdef USE_BUFFERED_IO
@@ -722,9 +736,7 @@ void *connection_thread(void *args) {
 
 // Resize and copy data to packet buffer
 			if (packet_buf_used + n + 1 >= packet_buf_allocated) {
-#ifdef DEBUG
-				puts("packet_buf too small, allocating");
-#endif
+				PPDEBUG("packet_buf too small, allocating\n");
 				packet_buf_allocated += PACKET_BUF_EXPAND;
 				char *new_buffer = (char *)realloc(packet_buf, packet_buf_allocated);
 				if (new_buffer == NULL) {
@@ -737,9 +749,7 @@ void *connection_thread(void *args) {
 
 // Buffer still too small
 			if (packet_buf_used + n + 1 >= packet_buf_allocated) {
-#ifdef DEBUG
-				puts("packet_buf really too small, exiting");
-#endif
+				PPDEBUG("packet_buf really too small, exiting\n");
 				syslog(LOG_ERR, "Packet_buf really too small, exiting");
 				error = true;
 				goto error_packet_too_small;
@@ -748,24 +758,20 @@ void *connection_thread(void *args) {
 // Copy data to packet buffer
 			strncat(packet_buf, recv_buf, n);
 			packet_buf_used += n;
-#ifdef DEBUG_PACKET
-			printf("n = '%d' packet_buf_used = '%ld' strlen(packet_buf) = '%ld' packet_buf_allocated = '%ld'\n", n, packet_buf_used, strlen(packet_buf), packet_buf_allocated);				
-			printf("recv_buf = '%s'\n", (n < 128) ? recv_buf : "not printing");
-			printf("packet_buf = '%s'\n", (packet_buf_used < 128) ? packet_buf : "not printing");			     	
-#endif
+			PPDEBUG("n = '%d' packet_buf_used = '%ld' strlen(packet_buf) = '%ld' packet_buf_allocated = '%ld'\n", n, packet_buf_used, strlen(packet_buf), packet_buf_allocated);				
+			PPDEBUG("recv_buf = '%s'\n", (n < 128) ? recv_buf : "not printing");
+			PPDEBUG("packet_buf = '%s'\n", (packet_buf_used < 128) ? packet_buf : "not printing");			     	
 // Find if packet complete
 			char *newline = strchr(packet_buf, '\n');
 			if (newline) {
-#ifdef DEBUG_PACKET
-				puts("Newline found");
-#endif
+				PDEBUG("Newline found\n");
 // Compute packet size
 				size_t line_length = newline - packet_buf + 1;
-#ifdef DEBUG_PACKET
-				printf("line length: '%ld'\n", line_length);
-#endif
+				PPDEBUG("line length: '%ld'\n", line_length);
+#ifdef USE_FILE_MUTEX
 // Write packet to file
 				pthread_mutex_lock(&file_mutex);
+#endif
 
 #ifdef USE_BUFFERED_IO
 				size_t written_to_file = fwrite(packet_buf, 1, line_length, data_file);
@@ -773,11 +779,10 @@ void *connection_thread(void *args) {
 #else
 				size_t written_to_file = write(data_file, packet_buf, line_length);
 #endif
-
+#ifdef USE_FILE_MUTEX
 				pthread_mutex_unlock(&file_mutex);
-#ifdef DEBUG_PACKET
-				printf("written_to_file = '%ld' '%ld'\n", written_to_file, line_length);
 #endif
+				PPDEBUG("written_to_file = '%ld' '%ld'\n", written_to_file, line_length);
 #ifdef USE_BUFFERED_IO
 				if (written_to_file < line_length && ferror(data_file)) {
 #else
@@ -805,11 +810,8 @@ void *connection_thread(void *args) {
 					error = true;
 					goto error_packet_send;
 				}
-#ifdef DEBUG_PACKET
-			} else {
-				puts("no newline found");
-#endif
-			}
+			} else 
+				PDEBUG("no newline found\n");
 		}
 	}
 
@@ -830,9 +832,7 @@ error_bad_file:
 	params->client_socket = -1;
 
 // Print IP address
-#ifdef DEBUG
-	printf("Closed connection from %s. thread %d\n", params->client_address, tid);
-#endif
+	PDEBUG("Closed connection from %s. thread %d\n", params->client_address, tid);
 	syslog(LOG_INFO, "Closed connection from %s, thread %d", params->client_address, tid);
 	memset(params->client_address, 0, sizeof(params->client_address));
 
