@@ -62,6 +62,7 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 *	[X] USE_BUFFERED_IO logic, ie unbuffered i/o added
 *	[X] USE_FILE_MUTEX logic
 *	[X] #define debug helpers
+*	[X] remove timer
 *	[ ] file open/close per thread
 *	[ ] cleanup() logic changed
 * 
@@ -91,7 +92,7 @@ n		==6362==    by 0x504E227: allocate_stack (allocatestack.c:627)
 #define AESD_DEBUG 
 #define AESD_DEBUG_PACKET 
 //#define USE_AESD_CHAR_DEVICE 1
-#define USE_FILE_MUTEX
+//#define USE_FILE_MUTEX
 //#define USE_BUFFERED_IO 1
 
 #ifndef USE_AESD_CHAR_DEVICE 
@@ -124,9 +125,6 @@ int server_socket = -1;  // listen on server_socket
 
 #ifdef USE_FILE_MUTEX
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
-#endif
-#ifndef USE_AESD_CHAR_DEVICE
-timer_t timer_id;			                      	// timer id
 #endif
 
 struct thread_params {
@@ -165,11 +163,6 @@ void cleanup(const char *msg, const char *s, int exitcode) {
 	}
 	exit_in_progress = true;
 	bool data_file_opened = true;	// assimg DATA_FILE open
-
-#ifndef USE_AESD_CHAR_DEVICE
-// Delete timer 
-	timer_delete(timer_id);
-#endif
 
 // Join all threads to finish
 	struct thread_entry *curr;
@@ -280,76 +273,6 @@ void setup_signal_handlers() {
 	sigaction(SIGINT,  &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 }
-
-#ifndef USE_AESD_CHAR_DEVICE
-// Write timestamp to a file
-void timer_thread(union sigval arg) {
-	char msg[100];
-	time_t current_time;
-	struct tm *local_time;
-
-#ifdef USE_BUFFERED_IO
-        FILE* file = (FILE *)arg.sival_ptr;
-#else
-       	int *p = (int *)arg.sival_ptr;
-	int file = *p;
-	PDEBUG("file %d\n", file);
-#endif
-	if (!file) 
-		exit_on_error("No open file in timer thread, handle:", NULL);
-
-	current_time = time(NULL);
-	if ((local_time = localtime(&current_time)) == NULL) 
-		exit_on_error("localtime in timer thread:", strerror(errno));
-
-	if (strftime(msg, sizeof(msg), "timestamp: %F %T\n", local_time) == 0) 
-		exit_on_error("strftime in timer thread:", strerror(errno));
-
-#ifdef USE_FILE_MUTEX
-	pthread_mutex_lock(&file_mutex);
-#endif
-#ifdef USE_BUFFERED_IO
-	fputs(msg, file);
-	fflush(file);
-#else
-	write(file, msg, strlen(msg)); 
-#endif
-#ifdef USE_FILE_MUTEX
-	pthread_mutex_unlock(&file_mutex);
-#endif
-}
-
-// Create timer that executes every n seconds
-// based on LSP p 392-3
-#ifdef USE_BUFFERED_IO
-void create_timer(unsigned n, FILE *file)
-#else
-void create_timer(unsigned n, int *file)
-#endif
-{
-	struct itimerspec ts;
-	struct sigevent se;
-
-	se.sigev_notify = SIGEV_THREAD;
-	se.sigev_value.sival_ptr = file; 
-#ifndef USE_BUFFERED_IO
-	PDEBUG("data file create_timer: %d\n", *file);
-#endif
-	se.sigev_notify_function = timer_thread;
-	se.sigev_notify_attributes = NULL;
-
-	ts.it_value.tv_sec = n;
-	ts.it_value.tv_nsec = 0;
-	ts.it_interval.tv_sec = n;  
-	ts.it_interval.tv_nsec = 0;
-
-	if(timer_create(CLOCK_REALTIME, &se, &timer_id) == -1) 
-		exit_on_error("Create timer", NULL);
-
-	if(timer_settime(timer_id, 0, &ts, 0) == -1) 
-		exit_on_error("Set timer", NULL);
-}
-#endif
 
 // Create server socket, terminate if failed
 void create_server_socket() {
@@ -479,15 +402,6 @@ int main(int argc, char *argv[]) {
 	if (!data_file) 
 		exit_on_error("Failed to open data file: ", strerror(errno));
 
-// Create timer thread
-#ifndef USE_AESD_CHAR_DEVICE
-#define TIMER_PERIOD 10 
-#ifdef USE_BUFFERED_IO
-	create_timer(TIMER_PERIOD, data_file);
-#else
-	create_timer(TIMER_PERIOD, &data_file);
-#endif
-#endif
 	PDEBUG("server: waiting for connections...\n");
 	while(1) {  // main accept() loop
 		struct sockaddr_storage their_addr; // connector's address information
