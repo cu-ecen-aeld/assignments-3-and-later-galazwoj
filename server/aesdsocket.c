@@ -29,7 +29,7 @@
 *	[X] cleanup() logic changed
 * 
 ***/
-#define _GNU_SOURCE		
+#define _GNU_SOURCE
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -51,12 +51,12 @@
 #include <pthread.h>
 #include <sys/queue.h>
 
-#define AESD_DEBUG 
-#define AESD_DEBUG_PACKET 
+//#define AESD_DEBUG 
+//#define AESD_DEBUG_PACKET 
 
 //#define USE_AESD_CHAR_DEVICE 1
 //#define USE_FILE_MUTEX
-//#define USE_BUFFERED_IO 1
+#define USE_BUFFERED_IO 1
 
 #ifndef USE_AESD_CHAR_DEVICE 
 #define USE_FILE_MUTEX
@@ -338,6 +338,7 @@ int main(int argc, char *argv[]) {
 error_pthread_create:
 error_malloc_thread_entry:
 error_malloc_thread_params:
+error_cannot_accept:
 
 #ifndef USE_AESD_CHAR_DEVICE
 // Delete the file
@@ -362,7 +363,7 @@ error_malloc_thread_params:
 		free(curr);
 	}
 
-error_cannot_accept:
+
 error_cannot_listen:
 error_cannot_fork:
 // Close server soocket
