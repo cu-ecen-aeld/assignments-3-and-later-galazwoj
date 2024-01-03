@@ -51,12 +51,12 @@
 #include <pthread.h>
 #include <sys/queue.h>
 
-//#define AESD_DEBUG 
-//#define AESD_DEBUG_PACKET 
+#define AESD_DEBUG 
+#define AESD_DEBUG_PACKET 
 
-//#define USE_AESD_CHAR_DEVICE 1
+#define USE_AESD_CHAR_DEVICE 1
 //#define USE_FILE_MUTEX
-#define USE_BUFFERED_IO 1
+//#define USE_BUFFERED_IO 1
 
 #ifndef USE_AESD_CHAR_DEVICE 
 #define USE_FILE_MUTEX
@@ -84,9 +84,8 @@
 #endif
 #define SOCKET_ERROR (-1)
 
-int server_socket = -1; 					// listen on server_socket
 volatile int running = false;					// thread loop running ?
-							
+
 #ifdef USE_FILE_MUTEX
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER; 	// file mutex
 #endif
@@ -156,6 +155,7 @@ int create_server_socket() {
 	struct addrinfo hints, *servinfo, *p;
 	int rv;
 	int yes=1;
+	int server_socket = -1; 		
 
 // Get IP address
 	memset(&hints, 0, sizeof hints);
@@ -197,10 +197,10 @@ int create_server_socket() {
 // Exit if no address bound
 	freeaddrinfo(servinfo); // all done with this structure
 	if (!p) {
-		syslog(LOG_ERR, "server: failed to bind");
+		syslog(LOG_ERR, "server: service not available");
 		return -1;
 	}
-	return 0;
+	return server_socket;
 }
 
 // get sockaddr, IPv4 or IPv6:
@@ -222,6 +222,7 @@ int is_char_device(const char *path)
 void *connection_thread(void *args);
 
 int main(int argc, char *argv[]) {
+	int server_socket = -1; 			// listen on server_socket
 	int opt;
 	bool daemonize_flag = false;
 	bool error = true;
@@ -265,7 +266,7 @@ int main(int argc, char *argv[]) {
 	setup_signal_handlers();
 
 // Crrate server socket and fork
-	if (create_server_socket() == -1) {
+	if ((server_socket = create_server_socket()) == -1) {
 		goto error_socket;
 	}
 
@@ -291,7 +292,8 @@ int main(int argc, char *argv[]) {
 // Accept
 		int client_socket = accept(server_socket, (struct sockaddr *)&their_addr, &sin_size);
 		if (client_socket == -1) {
-			syslog(LOG_ERR, "Failed to accept connection: %s", strerror(errno));
+			if (errno != EINTR) 
+				syslog(LOG_ERR, "Failed to accept connection: %s", strerror(errno));
 			goto error_cannot_accept;
 		}
 
@@ -343,6 +345,8 @@ error_cannot_accept:
 #ifndef USE_AESD_CHAR_DEVICE
 // Delete the file
 	remove(DATA_FILE);
+#else
+	error = error;
 #endif
 
 // Join all threads to finish
@@ -376,7 +380,7 @@ error_path_not_found:
 error_invalid_parameter:
 // Close syslog
 	closelog();
-	
+
 // Exit with exit code
 	exit(error ? SOCKET_ERROR : 0);
 }
@@ -424,7 +428,7 @@ size_t send_file(int client_socket, int data_file) {
 #ifdef USE_FILE_MUTEX
 	pthread_mutex_lock(&file_mutex);
 #endif
-#ifndef USE_AESD_CHAR_DEVICE
+
 // Save file pos ptr
 #ifdef USE_BUFFERED_IO
 	int cur_pos = ftell(data_file);
@@ -433,7 +437,7 @@ size_t send_file(int client_socket, int data_file) {
 	int cur_pos = lseek(data_file, 0, SEEK_CUR);
 	lseek(data_file, 0, SEEK_SET);
 #endif
-#endif
+
 	memset(send_buf, 0, sizeof(send_buf));
 	while(1) {
 
@@ -459,8 +463,8 @@ size_t send_file(int client_socket, int data_file) {
 				error = true;
 				break;
 			} 
-			else
-				no_more_data = true;
+//			else
+//				no_more_data = true;
 #endif
 		}
 
@@ -490,7 +494,6 @@ size_t send_file(int client_socket, int data_file) {
 	}
 	PPDEBUG("total bytes read '%ld' total bytes sent '%ld'\n", total_bytes_read, total_bytes_sent);
 
-#ifndef USE_AESD_CHAR_DEVICE
 // Restore file pos ptr	
 #ifdef USE_BUFFERED_IO
 	fseek(data_file, cur_pos, SEEK_SET);
@@ -498,7 +501,6 @@ size_t send_file(int client_socket, int data_file) {
 	lseek(data_file, cur_pos, SEEK_SET);
 #endif
 
-#endif
 #ifdef USE_FILE_MUTEX
 	pthread_mutex_unlock(&file_mutex);
 #endif
@@ -587,8 +589,8 @@ void *connection_thread(void *args) {
 			syslog(LOG_ERR,"Failed to recv data: %s", strerror(errno));
 			error = true;
 			goto error_packet_recv;
-		}	
-		      	
+		}
+
 		if (n == 0) 
 			break;
 
@@ -603,7 +605,7 @@ void *connection_thread(void *args) {
 					syslog(LOG_ERR, "Failed to realloc memory: %s", strerror(errno));
 					error = true;
 					goto error_packet_realloc;
-				}	
+				}
 				packet_buf = new_buffer;
 			}
 
@@ -620,7 +622,7 @@ void *connection_thread(void *args) {
 			packet_buf_used += n;
 			PPDEBUG("n = '%d' packet_buf_used = '%ld' strlen(packet_buf) = '%ld' packet_buf_allocated = '%ld'\n", n, packet_buf_used, strlen(packet_buf), packet_buf_allocated);				
 			PPDEBUG("recv_buf = '%s'\n", (n < 128) ? recv_buf : "not printing");
-			PPDEBUG("packet_buf = '%s'\n", (packet_buf_used < 128) ? packet_buf : "not printing");			     	
+			PPDEBUG("packet_buf = '%s'\n", (packet_buf_used < 128) ? packet_buf : "not printing");
 // Find if packet complete
 			char *newline = strchr(packet_buf, '\n');
 			if (newline) {
