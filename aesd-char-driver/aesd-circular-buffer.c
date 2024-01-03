@@ -15,7 +15,6 @@
 #endif
 
 #include "aesd-circular-buffer.h"
-#include <stdlib.h>
 
 /**
  * @param buffer the buffer to search for corresponding offset.  Any necessary locking must be performed by caller.
@@ -36,8 +35,7 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 
  	uint8_t index;
 	struct aesd_buffer_entry *entry;
-	int n = char_offset;
-	int nn;
+	int n, nn;
 
 // bad parameters 
 	if (!entry_offset_byte_rtn || !buffer) 
@@ -67,8 +65,7 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 			n = nn;
 		}
 
-	}
-	if (buffer->full) {
+	} else {	// if (buffer->full) {
 // part 1, read starting from out_offs
 		AESD_CIRCULAR_BUFFER_FOREACH(entry,buffer,index) {
 // this will be read in part 2
@@ -86,7 +83,8 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 // not found
 			if (index == buffer->out_offs)
 				return NULL;
-			if (index > buffer->in_offs)
+// not found
+			if (index == buffer->in_offs)
 				return NULL;				
 			nn = n - entry->size;
 			if (nn < 0) 
@@ -109,9 +107,11 @@ found:
 * new start location.
 * Any necessary locking must be handled by the caller
 * Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
+* @return 1 if success, 0 on failure
+* @sold_entry_size size of entry freed
 */
 
-void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
+int aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry, size_t *old_entry_size)
 {
     /**
     * TODO: implement per description
@@ -122,18 +122,31 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
 
 // bad parameters
 	if (!buffer || !add_entry)
-		return;
+		return 0;
 
 // allocate new entry
 	bufsize = add_entry->size+1;
+	if (old_entry_size)
+	        *old_entry_size = 0;
+
+#ifdef __KERNEL__
+	if (!(p = kmalloc(bufsize, GFP_KERNEL))) 
+#else
 	if (!(p = malloc(bufsize))) 
-		return;
+#endif
+		return 0;
 	strncpy(p, add_entry->buffptr, bufsize);				
 
 //remove previously used entry
 	entry = &buffer->entry[buffer->in_offs];
 	if (buffer->full) {
+#ifdef __KERNEL__
+		kfree((void*)entry->buffptr);
+#else
 		free((void*)entry->buffptr);
+#endif
+		if (old_entry_size)
+		        *old_entry_size = entry->size;
 		entry->size = 0;		
 	}
 
@@ -142,15 +155,19 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
 	entry->size = add_entry->size;
 
 // advance out_offs ptr if buffer full and handle the limit case
-	if (buffer->full) 
-		if (++buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) 
+	if (buffer->full) {
+		if (buffer->out_offs == buffer->in_offs) 
+			buffer->out_offs++;		
+		if (buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) 
 			buffer->out_offs = 0;
+	}
 
 // mark buffer full in in_offs reaches its limit
 	if (++buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
 		buffer->full = true;
 		buffer->in_offs = 0;
 	}	
+	return 1;
 }
 
 /**
