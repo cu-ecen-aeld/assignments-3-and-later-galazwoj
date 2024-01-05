@@ -84,6 +84,11 @@
 #endif
 #define SOCKET_ERROR (-1)
 
+#ifndef  gettid
+// glibc from aarm64 buildroot does not support this
+pid_t gettid(void) { return 1; }
+#endif
+
 volatile int running = false;					// thread loop running ?
 
 #ifdef USE_FILE_MUTEX

@@ -1,8 +1,8 @@
 # Compiler and flags
 CC ?= $(CROSS_COMPILE)gcc
-CFLAGS += -Wall -Werror
-LDFLAGS += -pthread
-LDLIBS += -lrt
+# The space after ?= is important !!!
+CFLAGS ?=-Wall -Werror
+LDFLAGS ?=-pthread
 
 # Source files
 SRCS = aesdsocket.c
@@ -22,4 +22,3 @@ distclean: clean
 
 clean:
 	rm -f $(OBJS) $(TARGET)
-
