@@ -1,10 +1,8 @@
 # Compiler and flags
 CC ?= $(CROSS_COMPILE)gcc
-CFLAGS ?= -Wall -Werror -pthread
-LDFLAGS ?= -pthread -lrt
-
-.c.o:
-	$(CC) -c $(CFLAGS) $^ 
+CFLAGS += -Wall -Werror
+LDFLAGS += -pthread
+LDLIBS += -lrt
 
 # Source files
 SRCS = aesdsocket.c
@@ -17,10 +15,6 @@ TARGET = aesdsocket
 
 # Default target
 all: $(TARGET)
-
-$(TARGET): $(OBJS)
-#	$(CC) -o $@ -pthread $^ -lrt
-	$(CC) -o $@ $^ $(LDFLAGS)
 
 .PHONY: all clean distclean
 # Clean target
