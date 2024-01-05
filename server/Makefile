@@ -1,10 +1,10 @@
 # Compiler and flags
 CC ?= $(CROSS_COMPILE)gcc
-CFLAGS ?= -Wall -Werror
+CFLAGS ?= -Wall -Werror -pthread
 LDFLAGS ?= -pthread -lrt
 
 .c.o:
-	$(CC) -c $(CFLAGS) $^
+	$(CC) -c $(CFLAGS) $^ 
 
 # Source files
 SRCS = aesdsocket.c
