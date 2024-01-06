@@ -9,6 +9,10 @@
  * @date 2019-10-22
  * @copyright Copyright (c) 2019
  *
+ * differences compared to ther kernel described in the assignment
+ * 	uses lseek()
+ * 	allocates and frees entries in the circural buffer differently to the method advised in the video
+ *     
  */
 
 #include <linux/module.h>
@@ -22,9 +26,6 @@
 #include <linux/errno.h>	/* error codes */
 #include "aesdchar.h"
 
-
-#define USE_FIXED_MUTEX
-
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -33,7 +34,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
-// 2
 // set circular buffer to empty removing all allocated data
 int aesd_trim(struct aesd_circular_buffer *buffer)
 {
@@ -56,7 +56,6 @@ int aesd_trim(struct aesd_circular_buffer *buffer)
 	return 0;
 }
 
-// 2
 int aesd_open(struct inode *inode, struct file *filp)
 {
         ssize_t retval = 0;
@@ -65,20 +64,10 @@ int aesd_open(struct inode *inode, struct file *filp)
 	dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
 	filp->private_data = dev; /* for other methods */
 
-	/* now trim to 0 the length of the device if open was write-only */
-	if ( (filp->f_flags & O_ACCMODE) == O_WRONLY) {
-		if (mutex_lock_interruptible(&dev->lock))
-			retval = -ERESTARTSYS;
-		else {
-			aesd_trim(dev->data); /* ignore errors */
-			mutex_unlock(&dev->lock);
-		}
-	}
     	PDEBUG("aesd_open exit, result (%ld)", retval);
     	return retval;
 }
 
-// 2
 int aesd_release(struct inode *inode, struct file *filp)
 {
     	PDEBUG("aesd_release entry");
@@ -86,7 +75,6 @@ int aesd_release(struct inode *inode, struct file *filp)
     	return 0;
 }
 
-// 2
 // actually this function is sort of misleading because in a true circular buffer scenario 
 // once an entry is read it is then freed which doesn't happen in this implementation
 //
@@ -150,7 +138,6 @@ out_nomutex:
 	return retval;
 }
 
-// 2
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     	ssize_t retval = 0;
@@ -218,7 +205,6 @@ out_nonmutex:
     	return retval;
 }
 
-// 2
 loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
 {
 	struct aesd_dev *dev = filp->private_data;
@@ -229,33 +215,11 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
         	PDEBUG("failed to lock mutex");
         	goto out_nomutex;
     	}
-#ifndef  USE_FIXED_MUTEX
-	switch(whence) {
-	  case 0: /* SEEK_SET */
-		newpos = off;
-		break;
 
-	  case 1: /* SEEK_CUR */
-		newpos = filp->f_pos + off;
-		break;
-
-	  case 2: /* SEEK_END */
-		newpos = dev->size + off;
-		break;
-
-	  default: /* can't happen */
-		newpos = -EINVAL;
-		goto out_mutex;
-
-	}
-	if (newpos < 0) return -EINVAL;
-	filp->f_pos = newpos;
-out_mutex:
-#else
-// generic llseek
+// generic llseek oneliner
+// https://lkml.iu.edu/hypermail/linux/kernel/1506.1/04776.html
+// https://elixir.bootlin.com/linux/v5.10.204/source/fs/read_write.c#L154
     	newpos = fixed_size_llseek(filp, off, whence, dev->size);
-#endif
-
     	mutex_unlock(&dev->lock);
 out_nomutex:
 
@@ -263,7 +227,6 @@ out_nomutex:
     	return newpos;
 }
 
-// done
 struct file_operations aesd_fops = {
     	.owner =    THIS_MODULE,
      	.read =     aesd_read,
@@ -273,7 +236,6 @@ struct file_operations aesd_fops = {
     	.release =  aesd_release,
 };
 
-// done
 static int aesd_setup_cdev(struct aesd_dev *dev)
 {
     	int err, devno = MKDEV(aesd_major, aesd_minor);
@@ -289,7 +251,6 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     	return err;
 }
 
-// 2
 int aesd_init_module(void)
 {
     	dev_t dev = 0;
@@ -324,7 +285,6 @@ int aesd_init_module(void)
     	return result;
 }
 
-// 2
 void aesd_cleanup_module(void)
 {
     	dev_t devno = MKDEV(aesd_major, aesd_minor);
@@ -341,6 +301,3 @@ void aesd_cleanup_module(void)
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
-
-// czy tworzenie circular buffer w init czy w open? - chyba przy open aby kazdy mial 0 
-// czy usuwanie circular bufer w release czy w exit
