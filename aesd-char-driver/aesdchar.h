@@ -33,6 +33,7 @@ struct aesd_dev
      */
     	struct aesd_circular_buffer *data;  	/* circular buffer			*/
 	unsigned long size; 	   		/* amount of data stored in data 	*/
+	struct aesd_buffer_entry entry;		/* data without termianting \n		*/
 	struct mutex lock;     			/* mutual exclusion semaphore 		*/
     	struct cdev cdev;     			/* Char device structure      		*/
 };

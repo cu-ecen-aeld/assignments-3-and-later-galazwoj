@@ -22,6 +22,9 @@
 #include <linux/errno.h>	/* error codes */
 #include "aesdchar.h"
 
+
+#define USE_FIXED_MUTEX
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -101,6 +104,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 
 	if (mutex_lock_interruptible(&dev->lock)) {
 		retval = -ERESTARTSYS;
+        	PDEBUG("failed to lock mutex");
 		goto out_nomutex;
 	}
 
@@ -146,53 +150,63 @@ out_nomutex:
 	return retval;
 }
 
-// 1
+// 2
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     	ssize_t retval = 0;
     	struct aesd_dev *dev = filp->private_data;
-    	struct aesd_buffer_entry entry;
         size_t old_entry_size;
+	char *tmp_buf;
     	PDEBUG("aesd_write entry (%zu) bytes with offset (%lld)",count,*f_pos);    
 
 // nothing to write     
     	if (!count) 
-        	goto out_mutex;   
+        	goto out_nonmutex;   
 
     	if (mutex_lock_interruptible(&dev->lock)) {
         	retval = -ERESTARTSYS;
+        	PDEBUG("failed to lock mutex");
         	goto out_nonmutex;
     	}
 
 // allocate entry    
-	entry.size = count;
-	entry.buffptr = kmalloc(entry.size, GFP_KERNEL); 
-    	if (!entry.buffptr){
+	tmp_buf = krealloc(dev->entry.buffptr, dev->entry.size + count, GFP_KERNEL); 
+    	if (!tmp_buf){
 		retval = -ENOMEM;
         	PDEBUG("failed to allocate memory for the buffer");
         	goto out_mutex;
     	}
-	memset((void *)entry.buffptr, 0, entry.size);
+	else 
+		dev->entry.buffptr = tmp_buf;
 
 // copy data from user space to kernel space.
-    	if (copy_from_user((void *)entry.buffptr, buf, entry.size)) {
+    	if (copy_from_user((void *)(dev->entry.buffptr + dev->entry.size), buf, count)) {
         	retval = -EFAULT;
-        	kfree(entry.buffptr);
+// shrink if error
+		dev->entry.buffptr = krealloc(dev->entry.buffptr, dev->entry.size , GFP_KERNEL); 		
         	PDEBUG("failed to copy from the user buffer");
         	goto out_mutex;
     	}
+	dev->entry.size += count;	
 
-// write to circular buffer 
-    	if (!aesd_circular_buffer_add_entry(dev->data, &entry, &old_entry_size)) {
-		retval = -ENOMEM;
-        	kfree(entry.buffptr);
-        	PDEBUG("failed to write data to the circular buffer");
-        	goto out_mutex;
-    	}
+// write to circular buffer if \n present at the end of string
+   	if (dev->entry.buffptr[dev->entry.size-1] == '\n') {
+	    	if (!aesd_circular_buffer_add_entry_ext(dev->data, &dev->entry, &old_entry_size)) {
+			retval = -ENOMEM;
+// shrink if error
+			dev->entry.size -= count;
+			dev->entry.buffptr = krealloc(dev->entry.buffptr, dev->entry.size , GFP_KERNEL); 		
+	        	PDEBUG("failed to write data to the circular buffer");
+	        	goto out_mutex;
+	    	}
 
 // update size
-        dev->size += entry.size;    
-        dev->size -= old_entry_size;    
+	        dev->size += dev->entry.size;    
+	        dev->size -= old_entry_size;    
+// free entry
+        	dev->entry.size = 0;
+        	dev->entry.buffptr = krealloc(dev->entry.buffptr, dev->entry.size, GFP_KERNEL); 
+	}
     	*f_pos += count;
     	retval = count;
   
@@ -210,13 +224,12 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
 	struct aesd_dev *dev = filp->private_data;
     	loff_t newpos;
     	PDEBUG("aesd_llseek entry, pos (%lld), action (%d)", off, whence);
-#ifndef LLL_XXX
     	if (mutex_lock_interruptible(&dev->lock)) {
         	newpos = -ERESTARTSYS;
+        	PDEBUG("failed to lock mutex");
         	goto out_nomutex;
     	}
-#endif
-#ifdef  LLL_XXX
+#ifndef  USE_FIXED_MUTEX
 	switch(whence) {
 	  case 0: /* SEEK_SET */
 		newpos = off;
@@ -237,19 +250,14 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
 	}
 	if (newpos < 0) return -EINVAL;
 	filp->f_pos = newpos;
-
+out_mutex:
 #else
 // generic llseek
     	newpos = fixed_size_llseek(filp, off, whence, dev->size);
 #endif
-#ifdef  LLL_XXX
-out_mutex:
-#endif
-#ifndef LLL_XXX
 
     	mutex_unlock(&dev->lock);
 out_nomutex:
-#endif
 
        	PDEBUG("aesd_llseek exit, result: (%lld)", newpos);
     	return newpos;
@@ -302,7 +310,10 @@ int aesd_init_module(void)
 		return result;
 	}
 	aesd_circular_buffer_init(aesd_device.data);
-	aesd_device.size = 0;		                              
+	aesd_device.size = 0;		            
+	aesd_device.entry.size = 0;
+	aesd_device.entry.buffptr = NULL; 
+                  
  	mutex_init(&aesd_device.lock);
 
     	result = aesd_setup_cdev(&aesd_device);
@@ -330,3 +341,6 @@ void aesd_cleanup_module(void)
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
+
+// czy tworzenie circular buffer w init czy w open? - chyba przy open aby kazdy mial 0 
+// czy usuwanie circular bufer w release czy w exit
