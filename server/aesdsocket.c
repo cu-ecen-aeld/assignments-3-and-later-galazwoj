@@ -468,8 +468,6 @@ size_t send_file(int client_socket, int data_file) {
 				error = true;
 				break;
 			} 
-//			else
-//				no_more_data = true;
 #endif
 		}
 
