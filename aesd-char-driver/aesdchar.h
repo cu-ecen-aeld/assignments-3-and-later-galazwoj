@@ -8,7 +8,17 @@
 #ifndef AESD_CHAR_DRIVER_AESDCHAR_H_
 #define AESD_CHAR_DRIVER_AESDCHAR_H_
 
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/kernel.h>	/* printk() */
+#include <linux/slab.h>		/* kmalloc() */
+#include <linux/printk.h>
+#include <linux/types.h>
+#include <linux/cdev.h>
+#include <linux/fs.h> 		// file_operations
+#include <linux/errno.h>	/* error codes */
 #include "aesd-circular-buffer.h"
+#include "aesd_ioctl.h"
 
 #define AESD_DEBUG 1  //Remove comment on this line to enable debug
 
@@ -39,3 +49,5 @@ struct aesd_dev
 };
 
 #endif /* AESD_CHAR_DRIVER_AESDCHAR_H_ */
+
+

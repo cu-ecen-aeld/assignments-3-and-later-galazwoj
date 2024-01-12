@@ -10,11 +10,13 @@
 
 #ifdef __KERNEL__
 #include <linux/types.h>
+#include <linux/string.h>
 #include <linux/slab.h>
 #else
 #include <stddef.h> // size_t
 #include <stdint.h> // uintx_t
 #include <stdbool.h>
+#include <string.h>
 #include <stdlib.h>
 #endif
 

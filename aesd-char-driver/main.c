@@ -15,15 +15,6 @@
  *     
  */
 
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/kernel.h>	/* printk() */
-#include <linux/slab.h>		/* kmalloc() */
-#include <linux/printk.h>
-#include <linux/types.h>
-#include <linux/cdev.h>
-#include <linux/fs.h> 		// file_operations
-#include <linux/errno.h>	/* error codes */
 #include "aesdchar.h"
 
 int aesd_major =   0; // use dynamic major
@@ -144,7 +135,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     	struct aesd_dev *dev = filp->private_data;
         size_t old_entry_size;
 	char *tmp_buf;
-    	PDEBUG("aesd_write entry (%zu) bytes with offset (%lld)",count,*f_pos);    
+    	PDEBUG("aesd_write entry, (%zu) bytes with offset (%lld)",count,*f_pos);    
 
 // nothing to write     
     	if (!count) 
@@ -221,10 +212,83 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
 // https://elixir.bootlin.com/linux/v5.10.204/source/fs/read_write.c#L154
     	newpos = fixed_size_llseek(filp, off, whence, dev->size);
     	mutex_unlock(&dev->lock);
-out_nomutex:
 
+out_nomutex:
        	PDEBUG("aesd_llseek exit, result: (%lld)", newpos);
     	return newpos;
+}
+
+/**
+ * Adjust the file offset (f_pos) parameter of @param filp based on the location specified by
+ * @param write_cmd (the zero referenced command to locate)
+ * and @param write_cmd_offset (the zero referenced offset into the command)
+ * @return 0 if successful, negative if error occured:
+ * 	-ERESTARTSYS if mutex could not be obtained
+ * 	-EINVAL if write command or write_cmd_offset was out of range
+ */
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, size_t write_cmd_offset)
+{
+	struct aesd_dev *dev = filp->private_data;
+	long retval = 0;
+	int id_entry; 
+
+	PDEBUG("aesd_adjust_file_offset entry, command: (%d) offset: (%zu)", write_cmd, write_cmd_offset);    
+
+	if (mutex_lock_interruptible(&dev->lock)) {
+		retval = -ERESTARTSYS;
+		PDEBUG("failed to lock mutex");
+		goto out_nonmutex;
+	}
+
+// check for index into circular buffer and for write_cmd_offset in entry size
+	if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED || write_cmd_offset >= dev->data->entry[write_cmd].size) {
+		retval = -EINVAL;
+		goto out_mutex;
+	}
+	
+// compute offset 
+	for (id_entry = 0; id_entry < write_cmd; id_entry++) 
+		filp->f_pos += dev->data->entry[id_entry].size;
+	filp->f_pos += write_cmd_offset;
+
+out_mutex:
+	mutex_unlock(&dev->lock);
+
+out_nonmutex:
+	PDEBUG("aesd_adjust_file_offset exit, result: (%ld)", retval);
+	return retval;
+}
+
+long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	long retval;
+	PDEBUG("aesd_unlocked_ioctl entry, command: (%d)", cmd);
+
+// check parameters 
+	if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC || _IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) {
+		retval = -EINVAL;
+		goto out; 
+	}
+
+// check if command valid 
+	switch (cmd) {
+		case AESDCHAR_IOCSEEKTO: {
+// copy data
+			struct aesd_seekto seek_to;
+			if (copy_from_user(&seek_to, (const void __user *)arg, sizeof(struct aesd_seekto))) 
+				retval = -EFAULT;
+			else	
+// perform action
+				retval = aesd_adjust_file_offset(filp, seek_to.write_cmd, seek_to.write_cmd_offset);
+			break;
+		}
+		default:
+			retval = -ENOTTY;
+	}
+
+out:
+	PDEBUG("aesd_unlocked_ioctl exit, result: (%ld)", retval);
+	return retval;
 }
 
 struct file_operations aesd_fops = {
@@ -234,6 +298,7 @@ struct file_operations aesd_fops = {
     	.open =     aesd_open,
 	.llseek =   aesd_llseek,	
     	.release =  aesd_release,
+	.unlocked_ioctl = aesd_unlocked_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
