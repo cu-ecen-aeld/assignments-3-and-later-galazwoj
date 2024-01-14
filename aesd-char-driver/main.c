@@ -232,7 +232,7 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, s
 	long retval = 0;
 	int id_entry; 
 
-	PDEBUG("aesd_adjust_file_offset entry, command: (%d) offset: (%zu)", write_cmd, write_cmd_offset);    
+	PDEBUG("aesd_adjust_file_offset entry, command: (%u) offset: (%zu)", write_cmd, write_cmd_offset);    
 
 	if (mutex_lock_interruptible(&dev->lock)) {
 		retval = -ERESTARTSYS;
@@ -241,13 +241,13 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, s
 	}
 
 // check for index into circular buffer and for write_cmd_offset in entry size
-	if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED || write_cmd_offset >= dev->data->entry[write_cmd].size) {
+	if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED || write_cmd < dev->data->out_offs || write_cmd_offset >= dev->data->entry[write_cmd].size ) {
 		retval = -EINVAL;
 		goto out_mutex;
 	}
 	
 // compute offset 
-	for (id_entry = 0; id_entry < write_cmd; id_entry++) 
+	for (id_entry = dev->data->out_offs; id_entry != write_cmd; id_entry = (id_entry + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) 
 		filp->f_pos += dev->data->entry[id_entry].size;
 	filp->f_pos += write_cmd_offset;
 
@@ -262,11 +262,16 @@ out_nonmutex:
 long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	long retval;
-	PDEBUG("aesd_unlocked_ioctl entry, command: (%d)", cmd);
+	PDEBUG("aesd_unlocked_ioctl entry, command: (%u)", cmd);
 
-// check parameters 
-	if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC || _IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) {
+	if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) {
 		retval = -EINVAL;
+		PDEBUG("aesd_unlocked_ioctl entry, fail 1");
+		goto out; 
+	}
+	if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) {
+		retval = -EINVAL;
+		PDEBUG("aesd_unlocked_ioctl entry, fail 2");
 		goto out; 
 	}
 
