@@ -22,11 +22,19 @@
 *	[X] added USE_AESD_CHAR_DEVICE logic added
 *	[X] some debug stuff removed
 *	[X] USE_BUFFERED_IO logic, ie unbuffered i/o added
-*	[X] USE_FILE_MUTEX logic
+*	[X] USE_FILE_MUTEX logic added 
 *	[X] #define debug helpers
-*	[X] remove timer
+*	[X] timer removed
 *	[X] file open/close per thread
 *	[X] cleanup() logic changed
+*
+*5.  Add special handling for socket write commands to your aesdsocket server application
+*        a. When the string sent over the socket equals AESDCHAR_IOCSEEKTO:X,Y where X and Y are unsigned decimal integer values, 
+*	   the X should be considered the write command to seek into and the Y should be considered the offset within the write command.  
+*        b. These values should be sent to your driver using the AESDCHAR_IOCSEEKTO ioctl described earlier.  The ioctl command should be performed before any additional writes to your aesdchar device.
+*        c. Do not write this string command into the aesdchar device as you do with other strings sent to the socket.
+*        d. Send the content of the aesdchar device back over the socket, as you do with any other string received over the socket interface.  We will use this to test the seek command.
+*        e. Ensure the read of the file and return over the socket uses the same (not closed and re-opened) file descriptor used to send the ioctl, to ensure your file offset is honored for the read command.
 * 
 ***/
 #define _GNU_SOURCE
@@ -54,9 +62,14 @@
 #define AESD_DEBUG 
 #define AESD_DEBUG_PACKET 
 
-#define USE_AESD_CHAR_DEVICE 1
+#define USE_BUFFERED_IO 1
 //#define USE_FILE_MUTEX
-//#define USE_BUFFERED_IO 1
+#define USE_AESD_CHAR_DEVICE 1
+
+#ifdef USE_AESD_CHAR_DEVICE 
+#include <sys/ioctl.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
+#endif
 
 #ifndef USE_AESD_CHAR_DEVICE 
 #define USE_FILE_MUTEX
@@ -413,9 +426,9 @@ size_t send_all(int s, char *buf, size_t len, int flag) {
 
 // Send entire file contents 
 #ifdef USE_BUFFERED_IO
-size_t send_file(int client_socket, FILE * data_file) {
+size_t send_file(int client_socket, FILE * data_file, bool read_from_zero) {
 #else
-size_t send_file(int client_socket, int data_file) {
+size_t send_file(int client_socket, int data_file, bool read_from_zero) {
 #endif
 
 #define SEND_BUF_SIZE 1024
@@ -437,10 +450,12 @@ size_t send_file(int client_socket, int data_file) {
 // Save file pos ptr
 #ifdef USE_BUFFERED_IO
 	int cur_pos = ftell(data_file);
-	fseek(data_file, 0, SEEK_SET);
+	if (read_from_zero)
+		fseek(data_file, 0, SEEK_SET);
 #else
 	int cur_pos = lseek(data_file, 0, SEEK_CUR);
-	lseek(data_file, 0, SEEK_SET);
+	if (read_from_zero)
+		lseek(data_file, 0, SEEK_SET);
 #endif
 
 	memset(send_buf, 0, sizeof(send_buf));
@@ -510,6 +525,64 @@ size_t send_file(int client_socket, int data_file) {
 error_bad_parameters:
 	return (error) ? -1 : total_bytes_sent;
 }
+
+#ifdef USE_AESD_CHAR_DEVICE
+/***
+ * @return 
+ * 	 1 found ioctl msg, do not write the packet_buf to file
+ *	 0 not found ioctl msg, so write the packet_buf to file
+ *     	-1 found ioctl msg, failure occured, terminate the program
+ */
+int handle_ioctl_write_xommand(int fd, char *packet_buf) {
+	const char ioctl_msg[] = "AESDCHAR_IOCSEEKTO:";
+	int ioctl_n = strlen(ioctl_msg);
+	char *xy_pos;
+	int result;
+	struct aesd_seekto seek_to;
+// empty string
+	if (!packet_buf) {
+       		PDEBUG("handle_ioctl_write_command 1\n");		
+		return 0;	
+	}
+// no substring present
+	if (!(xy_pos = strstr(packet_buf, ioctl_msg))) {
+       		PDEBUG("handle_ioctl_write_command 2\n");
+		return 0;	
+	}
+// no data for ioctl present - string too short
+	PDEBUG("handle_ioctl_write_command sizes (%d, %lu)\n", ioctl_n +4, strlen(packet_buf));
+	if (ioctl_n + 4 < strlen(packet_buf)) {
+       		PDEBUG("handle_ioctl_write_xommand 3\n");
+		return 0;	
+	}
+	xy_pos += ioctl_n;
+// no data for ioctl present - string too short
+	if(strlen(xy_pos) < 2) {
+       		PDEBUG("handle_ioctl_write_command 4\n");
+		return 0;			
+	}
+// read ioctl command arguments
+	result = sscanf(xy_pos, "%d,%d", &seek_to.write_cmd, &seek_to.write_cmd_offset);
+	if (result == -1) {
+       		PDEBUG("handle_ioctl_write_command 5\n");
+		return -1;		
+	}
+// number of arguments too little or too much
+	if (result < 2 || result > 2) {
+       		PDEBUG("handle_ioctl_write_command 6\n");
+		return 0;		
+	}
+// perform call
+	PDEBUG("handle_ioctl_write_command: (%u, %u )\n", seek_to.write_cmd, seek_to.write_cmd_offset);
+	if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seek_to) < 0) {
+       		PDEBUG("handle_ioctl_write_command 7\n");
+		syslog(LOG_ERR,"Failed to perform ioctl: %s", strerror(errno));
+		return -1;
+	} 
+	PDEBUG("handle_ioctl_write_command success\n");
+	return 1;	
+}
+#endif
 
 // Recv / send thread loop
 void *connection_thread(void *args) {
@@ -629,10 +702,31 @@ void *connection_thread(void *args) {
 // Find if packet complete
 			char *newline = strchr(packet_buf, '\n');
 			if (newline) {
+				bool read_from_zero = true;
 				PDEBUG("Newline found\n");
 // Compute packet size
 				size_t line_length = newline - packet_buf + 1;
+				
 				PPDEBUG("line length: '%ld'\n", line_length);
+// handle ioctl 				
+#ifdef USE_AESD_CHAR_DEVICE
+#ifdef USE_BUFFERED_IO
+				int ioctl_result = handle_ioctl_write_xommand(fileno(data_file), packet_buf);
+#else
+				int ioctl_result = handle_ioctl_write_xommand(data_file, packet_buf);
+#endif
+				if(ioctl_result == -1) {
+					error = true;
+					goto error_file_ioctl;
+				}  				
+// set not to seek file from zero
+				if(ioctl_result == 1) {			
+					read_from_zero = false;
+					goto writing_skipped;
+				}
+#endif                       
+
+// write to file				
 #ifdef USE_FILE_MUTEX
 // Write packet to file
 				pthread_mutex_lock(&file_mutex);
@@ -658,6 +752,13 @@ void *connection_thread(void *args) {
 					goto error_file_write;
 				}
 
+writing_skipped:
+// send file
+				if (send_file(client_socket, data_file, read_from_zero) == -1) {
+					error = true;
+					goto error_packet_send;
+				}
+
 // Decrease memory usage
 				if (packet_buf_allocated > PACKET_BUF_SIZE) {
 					packet_buf_allocated = PACKET_BUF_SIZE;	
@@ -671,18 +772,15 @@ void *connection_thread(void *args) {
 				}
 				memset(packet_buf, 0, packet_buf_allocated);
 				packet_buf_used = 0;
-				if (send_file(client_socket, data_file) == -1) {
-					error = true;
-					goto error_packet_send;
-				}
 			} else 
 				PDEBUG("no newline found\n");
 		}
 	}
 
-error_packet_send:
 error_packet_shrink:
+error_packet_send:
 error_file_write:
+error_file_ioctl:
 error_packet_too_small:
 error_packet_realloc:
 error_packet_recv:
